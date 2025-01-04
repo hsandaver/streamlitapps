@@ -3,3 +3,10 @@ pandas
 numpy
 plotly
 colormath
+pdfplumber
+markdownify
+pytesseract
+pdf2image
+PIL
+tempfile
+os
