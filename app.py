@@ -6,8 +6,13 @@ import plotly.graph_objects as go
 import logging
 from colormath.color_objects import LabColor, sRGBColor
 from colormath.color_conversions import convert_color
+from colormath.color_diff import delta_e_cie2000
 from typing import Union, List, Tuple, Optional, Any
 from io import StringIO
+
+# Monkey-patch numpy.asscalar for compatibility with colormath (numpy.asscalar is deprecated in newer versions)
+if not hasattr(np, 'asscalar'):
+    np.asscalar = lambda a: a.item() if isinstance(a, np.ndarray) else a
 
 # =============================================================================
 # Debugging & Logging Setup
@@ -20,7 +25,6 @@ logging.basicConfig(
 )
 
 def debug_log(message: str) -> None:
-    """Log a debug message for troubleshooting."""
     logging.debug(message)
 
 # =============================================================================
@@ -86,29 +90,43 @@ def lab_to_rgb(lab_color: Union[List[float], Tuple[float, float, float], np.ndar
         debug_log(f"Error converting LAB to RGB for {lab_color}: {e}")
         return (0, 0, 0)
 
-def calculate_delta_e(input_lab: Union[List[float], Tuple[float, float, float]], dataset_df: pd.DataFrame) -> np.ndarray:
+def calculate_delta_e_euclidean(input_lab: Union[List[float], Tuple[float, float, float]], 
+                                dataset_df: pd.DataFrame) -> np.ndarray:
     """
-    Calculate the Delta-E values between an input LAB color and a dataset.
-    
-    Returns:
-        np.ndarray: Array of Delta-E values.
+    Calculate Delta-E using the simple Euclidean distance (ΔE*76).
     """
-    debug_log("Calculating Delta-E values.")
+    debug_log("Calculating Euclidean Delta-E (ΔE*76).")
     input_lab_arr = np.array(input_lab)
     delta_e = np.linalg.norm(dataset_df[['L', 'A', 'B']].values - input_lab_arr, axis=1)
-    debug_log("Delta-E calculation complete.")
+    debug_log("Euclidean Delta-E calculation complete.")
     return delta_e
 
-def find_closest_color(input_lab: Union[List[float], Tuple[float, float, float]], 
-                       dataset_df: pd.DataFrame) -> Tuple[Optional[pd.Series], Optional[float]]:
+def calculate_delta_e_ciede2000(input_lab: Union[List[float], Tuple[float, float, float]], 
+                                dataset_df: pd.DataFrame) -> np.ndarray:
     """
-    Find the closest matching color from the dataset based on Delta-E distance.
+    Calculate Delta-E using the CIEDE2000 formula.
+    """
+    debug_log("Calculating CIEDE2000 Delta-E.")
+    input_lab_obj = LabColor(lab_l=input_lab[0], lab_a=input_lab[1], lab_b=input_lab[2])
+    delta_e_list = []
+    for idx, row in dataset_df.iterrows():
+        lab_obj = LabColor(lab_l=row['L'], lab_a=row['A'], lab_b=row['B'])
+        delta_e = delta_e_cie2000(input_lab_obj, lab_obj)
+        delta_e_list.append(delta_e)
+    debug_log("CIEDE2000 Delta-E calculation complete.")
+    return np.array(delta_e_list)
+
+def find_closest_color(input_lab: Union[List[float], Tuple[float, float, float]], 
+                       dataset_df: pd.DataFrame,
+                       delta_e_func=calculate_delta_e_euclidean) -> Tuple[Optional[pd.Series], Optional[float]]:
+    """
+    Find the closest matching color from the dataset based on the Delta-E distance.
     
     Returns:
         Tuple containing the closest color row and its Delta-E value.
     """
     debug_log(f"Finding closest color for input LAB: {input_lab}")
-    delta_e_values = calculate_delta_e(input_lab, dataset_df)
+    delta_e_values = delta_e_func(input_lab, dataset_df)
     if np.all(np.isnan(delta_e_values)):
         st.error("Delta-E calculation resulted in all NaN values. Check your dataset and input LAB values, nyah~!")
         debug_log("All Delta-E values are NaN.")
@@ -125,18 +143,12 @@ def find_closest_color(input_lab: Union[List[float], Tuple[float, float, float]]
 def create_color_comparison_plot(input_rgb: Tuple[int, int, int], closest_rgb: Tuple[int, int, int],
                                  input_lab: List[float], closest_lab: List[float],
                                  closest_color_name: str, delta_e: float) -> go.Figure:
-    """
-    Create a Plotly scatter plot comparing the input color to the closest match.
-    
-    Returns:
-        go.Figure: The generated scatter plot.
-    """
     debug_log("Creating color comparison plot.")
     data = pd.DataFrame({
         'Color Type': ['Input Color', f'Closest: {closest_color_name}'],
         'RGB': [f'rgb{input_rgb}', f'rgb{closest_rgb}'],
-        'LAB': [f'L={input_lab[0]}, A={input_lab[1]}, B={input_lab[2]}',
-                f'L={closest_lab[0]}, A={closest_lab[1]}, B={closest_lab[2]}'],
+        'LAB': [f"L={input_lab[0]}, A={input_lab[1]}, B={input_lab[2]}",
+                f"L={closest_lab[0]}, A={closest_lab[1]}, B={closest_lab[2]}"],
         'Delta-E': [delta_e, 'N/A']
     })
 
@@ -171,12 +183,6 @@ def create_color_comparison_plot(input_rgb: Tuple[int, int, int], closest_rgb: T
 def create_lab_comparison_bar(input_lab: List[float], closest_lab: List[float],
                               closest_color_name: str, input_rgb: Tuple[int, int, int],
                               closest_rgb: Tuple[int, int, int]) -> go.Figure:
-    """
-    Create a bar plot comparing LAB components of the input and closest colors.
-    
-    Returns:
-        go.Figure: The generated bar plot.
-    """
     debug_log("Creating LAB comparison bar plot.")
     components = ['L', 'A', 'B']
     data = pd.DataFrame({
@@ -220,12 +226,6 @@ def create_lab_comparison_bar(input_lab: List[float], closest_lab: List[float],
 def create_3d_lab_plot(input_lab: List[float], closest_lab: List[float],
                        closest_color_name: str, dataset_df: pd.DataFrame,
                        input_rgb: Tuple[int, int, int], closest_rgb: Tuple[int, int, int]) -> go.Figure:
-    """
-    Create a 3D scatter plot visualizing the LAB color space.
-    
-    Returns:
-        go.Figure: The generated 3D plot.
-    """
     debug_log("Creating 3D LAB color space plot.")
     dataset_points = go.Scatter3d(
         x=dataset_df['L'],
@@ -282,12 +282,6 @@ def create_3d_lab_plot(input_lab: List[float], closest_lab: List[float],
     return fig
 
 def create_delta_e_histogram(delta_e_values: np.ndarray) -> go.Figure:
-    """
-    Create a histogram showing the distribution of Delta-E values.
-    
-    Returns:
-        go.Figure: The generated histogram.
-    """
     debug_log("Creating Delta-E histogram.")
     fig = px.histogram(
         x=delta_e_values,
@@ -306,12 +300,6 @@ def create_delta_e_histogram(delta_e_values: np.ndarray) -> go.Figure:
     return fig
 
 def create_color_density_heatmap(dataset_df: pd.DataFrame) -> go.Figure:
-    """
-    Create a density heatmap for the A-B plane of the LAB color space.
-    
-    Returns:
-        go.Figure: The generated heatmap.
-    """
     debug_log("Creating color density heatmap.")
     fig = px.density_heatmap(
         dataset_df,
@@ -333,28 +321,21 @@ def create_color_density_heatmap(dataset_df: pd.DataFrame) -> go.Figure:
     return fig
 
 def create_pairwise_scatter_matrix(dataset_df: pd.DataFrame, input_lab: List[float],
-                                     closest_lab: List[float]) -> go.Figure:
-    """
-    Create a pairwise scatter matrix for the LAB components including input and closest colors.
-    
-    Returns:
-        go.Figure: The generated scatter matrix.
-    """
+                                   closest_lab: List[float]) -> go.Figure:
     debug_log("Creating pairwise scatter matrix.")
     splom_df = dataset_df.copy()
     input_row = {'L': input_lab[0], 'A': input_lab[1], 'B': input_lab[2], 'Color Name': 'Input Color'}
     closest_row = {'L': closest_lab[0], 'A': closest_lab[1], 'B': closest_lab[2], 'Color Name': 'Closest Color'}
     splom_df = pd.concat([splom_df, pd.DataFrame([input_row, closest_row])], ignore_index=True)
 
-    def map_color(color_name: str) -> str:
-        if color_name == 'Input Color':
-            return f'rgb{lab_to_rgb(input_lab)}'
-        elif color_name == 'Closest Color':
-            return f'rgb{lab_to_rgb(closest_lab)}'
-        else:
-            return 'lightgrey'
-    
-    splom_df['Color Group'] = splom_df['Color Name'].apply(map_color)
+    cache_rgb = {}
+    def map_color(color_name: str, lab_values: List[float]) -> str:
+        key = tuple(lab_values)
+        if key not in cache_rgb:
+            cache_rgb[key] = f'rgb{lab_to_rgb(lab_values)}'
+        return cache_rgb[key]
+
+    splom_df['Color Group'] = splom_df.apply(lambda row: map_color(row['Color Name'], [row['L'], row['A'], row['B']]), axis=1)
     splom_trace = go.Splom(
         dimensions=[
             dict(label='L', values=splom_df['L']),
@@ -378,9 +359,6 @@ def create_pairwise_scatter_matrix(dataset_df: pd.DataFrame, input_lab: List[flo
     return fig_splom
 
 def display_results_table(results: dict) -> None:
-    """
-    Display the results table with colored representations for RGB values.
-    """
     debug_log("Displaying results table.")
     df = pd.DataFrame([results])
 
@@ -392,17 +370,8 @@ def display_results_table(results: dict) -> None:
     st.markdown(df.to_html(escape=False, index=False), unsafe_allow_html=True)
     debug_log("Results table displayed.")
 
-# =============================================================================
-# Data Loading Function
-# =============================================================================
 @st.cache_data(show_spinner=True)
 def load_dataset(uploaded_file: Any) -> pd.DataFrame:
-    """
-    Load the dataset from the uploaded CSV file and validate required columns.
-    
-    Returns:
-        pd.DataFrame: The loaded dataset.
-    """
     debug_log("Loading dataset from uploaded file.")
     try:
         dataset_df = pd.read_csv(uploaded_file)
@@ -428,9 +397,6 @@ def load_dataset(uploaded_file: Any) -> pd.DataFrame:
 # Main Application
 # =============================================================================
 def main() -> None:
-    """
-    Main function to run the Enhanced LAB Color Analyzer Streamlit app.
-    """
     st.set_page_config(page_title="🎨 Enhanced LAB Color Analyzer", layout="wide", page_icon="🎨")
     st.title("🎨 Enhanced LAB Color Analyzer")
     st.markdown(
@@ -450,9 +416,17 @@ def main() -> None:
             """
             1. **Upload Dataset:** Upload the CSV file containing LAB values and color names.
             2. **Input LAB Color:** Choose your input method (sliders or manual entry).
-            3. **Find Closest Color:** Click the button to see the closest matching color and various visualizations.
+            3. **Choose Delta-E Metric:** Select between Euclidean ΔE*76 or CIEDE2000.
+            4. **Find Closest Color:** Click the button to see the closest matching color and various visualizations.
             """
         )
+
+    # Let the user select the Delta-E metric
+    delta_e_metric = st.sidebar.radio("Select Delta-E metric:", ("Euclidean ΔE76", "CIEDE2000"))
+    if delta_e_metric == "Euclidean ΔE76":
+        delta_e_func = calculate_delta_e_euclidean
+    else:
+        delta_e_func = calculate_delta_e_ciede2000
 
     if uploaded_file is None:
         st.info("📂 Please upload your 'iscc_nbs_lab_colors.csv' file to begin, nyah~!")
@@ -487,7 +461,7 @@ def main() -> None:
         debug_log("User initiated color matching process.")
         if validate_lab_color(input_lab):
             with st.spinner("Processing, nyah~..."):
-                closest_color, delta_e = find_closest_color(input_lab, dataset_df)
+                closest_color, delta_e = find_closest_color(input_lab, dataset_df, delta_e_func=delta_e_func)
                 if closest_color is not None:
                     closest_color_name = closest_color['Color Name']
                     closest_lab = [closest_color['L'], closest_color['A'], closest_color['B']]
@@ -499,7 +473,7 @@ def main() -> None:
                         f"""
                         **Input LAB Color:** L={input_lab[0]}, A={input_lab[1]}, B={input_lab[2]}  
                         **Closest ISCC-NBS Color:** {closest_color_name}  
-                        **Delta-E Value:** {delta_e:.2f}  
+                        **Delta-E Value ({delta_e_metric}):** {delta_e:.2f}  
                         **Closest LAB Color:** L={closest_lab[0]}, A={closest_lab[1]}, B={closest_lab[2]}  
                         **Input RGB Color:** {input_rgb}  
                         **Closest RGB Color:** {closest_rgb}
@@ -520,7 +494,7 @@ def main() -> None:
                         fig3 = create_3d_lab_plot(input_lab, closest_lab, closest_color_name, dataset_df, input_rgb, closest_rgb)
                         st.plotly_chart(fig3, use_container_width=True)
                     with tabs[3]:
-                        delta_e_values = calculate_delta_e(input_lab, dataset_df)
+                        delta_e_values = delta_e_func(input_lab, dataset_df)
                         fig4 = create_delta_e_histogram(delta_e_values)
                         st.plotly_chart(fig4, use_container_width=True)
                     with tabs[4]:
@@ -534,13 +508,22 @@ def main() -> None:
                     results = {
                         'Input LAB': f"L={input_lab[0]}, A={input_lab[1]}, B={input_lab[2]}",
                         'Closest ISCC-NBS Color': closest_color_name,
-                        'Delta-E': f"{delta_e:.2f}",
+                        'Delta-E Value': f"{delta_e:.2f}",
                         'Closest LAB': f"L={closest_lab[0]}, A={closest_lab[1]}, B={closest_lab[2]}",
                         'Input RGB': input_rgb,
                         'Closest RGB': closest_rgb
                     }
                     display_results_table(results)
                     debug_log("Color matching process completed successfully.")
+
+                    # Offer an export option for the results table
+                    csv_results = pd.DataFrame([results]).to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="Download Results as CSV",
+                        data=csv_results,
+                        file_name='color_match_results.csv',
+                        mime='text/csv',
+                    )
                 else:
                     debug_log("Closest color not found; process terminated.")
         else:
