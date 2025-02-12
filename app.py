@@ -4,6 +4,7 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 import logging
+import json
 from colormath.color_objects import LabColor, sRGBColor
 from colormath.color_conversions import convert_color
 from colormath.color_diff import delta_e_cie2000
@@ -39,27 +40,27 @@ def validate_lab_color(lab: Union[List[float], Tuple[float, float, float], np.nd
     """
     debug_log(f"Validating LAB color: {lab}")
     if not isinstance(lab, (list, tuple, np.ndarray)) or len(lab) != 3:
-        st.error("Input LAB color must be a list, tuple, or array of three numerical values, nyah~!")
+        st.error("Input LAB color must be a list, tuple, or array of three numerical values.")
         debug_log("Validation failed: Incorrect type or length")
         return False
 
     try:
         L, A, B = float(lab[0]), float(lab[1]), float(lab[2])
     except (ValueError, TypeError) as e:
-        st.error("LAB components must be numerical values, meep!")
+        st.error("LAB components must be numerical values.")
         debug_log(f"Validation failed: LAB conversion error - {e}")
         return False
 
     if not (0 <= L <= 100):
-        st.error("L component must be between 0 and 100, nyah~!")
+        st.error("L component must be between 0 and 100.")
         debug_log("Validation failed: L component out of range")
         return False
     if not (-128 <= A <= 127):
-        st.error("A component must be between -128 and 127, meep!")
+        st.error("A component must be between -128 and 127.")
         debug_log("Validation failed: A component out of range")
         return False
     if not (-128 <= B <= 127):
-        st.error("B component must be between -128 and 127, meep!")
+        st.error("B component must be between -128 and 127.")
         debug_log("Validation failed: B component out of range")
         return False
 
@@ -128,7 +129,7 @@ def find_closest_color(input_lab: Union[List[float], Tuple[float, float, float]]
     debug_log(f"Finding closest color for input LAB: {input_lab}")
     delta_e_values = delta_e_func(input_lab, dataset_df)
     if np.all(np.isnan(delta_e_values)):
-        st.error("Delta-E calculation resulted in all NaN values. Check your dataset and input LAB values, nyah~!")
+        st.error("Delta-E calculation resulted in all NaN values. Check your dataset and input LAB values.")
         debug_log("All Delta-E values are NaN.")
         return None, None
     min_idx = np.nanargmin(delta_e_values)
@@ -136,6 +137,44 @@ def find_closest_color(input_lab: Union[List[float], Tuple[float, float, float]]
     closest_color = dataset_df.iloc[min_idx]
     debug_log(f"Closest color found: {closest_color['Color Name']} with Delta-E: {min_delta_e}")
     return closest_color, min_delta_e
+
+# =============================================================================
+# Linked Data Enhancements
+# =============================================================================
+@st.cache_data(show_spinner=False)
+def load_linked_data(linked_data_file: Any) -> dict:
+    """
+    Load Linked Data JSON for Getty AAT controlled vocabulary.
+    
+    Returns:
+        dict: Dictionary mapping color names to their Linked Data information.
+    """
+    debug_log("Loading Linked Data from JSON file.")
+    try:
+        linked_data = json.load(linked_data_file)
+        debug_log("Linked Data loaded successfully.")
+        return linked_data
+    except Exception as e:
+        st.error(f"Error loading Linked Data JSON file: {e}")
+        debug_log(f"Error loading Linked Data JSON file: {e}")
+        return {}
+
+def add_linked_data_info(color_name: str, linked_data: dict) -> str:
+    """
+    Enhance the color name with Linked Data information if available.
+    
+    Args:
+        color_name (str): The color name from the dataset.
+        linked_data (dict): The linked data mapping from color names to Linked Data information.
+        
+    Returns:
+        str: Enhanced color name with hyperlink if available.
+    """
+    if color_name in linked_data and 'url' in linked_data[color_name]:
+        url = linked_data[color_name]['url']
+        return f'<a href="{url}" target="_blank">{color_name}</a>'
+    else:
+        return color_name
 
 # =============================================================================
 # Visualization Functions
@@ -159,7 +198,7 @@ def create_color_comparison_plot(input_rgb: Tuple[int, int, int], closest_rgb: T
         color='RGB',
         hover_data=['Color Type', 'LAB', 'Delta-E'],
         labels={'x': '', 'y': ''},
-        title='🖌️ Input Color vs Closest ISCC-NBS Color'
+        title='Input Color vs Closest ISCC-NBS Color'
     )
     fig.update_traces(marker=dict(size=50, line=dict(width=2, color='DarkSlateGrey')))
     fig.update_layout(
@@ -201,7 +240,7 @@ def create_lab_comparison_bar(input_lab: List[float], closest_lab: List[float],
         color='Type',
         barmode='group',
         hover_data=['Value'],
-        title='🔍 LAB Value Comparison',
+        title='LAB Value Comparison',
         template='plotly_dark',
         color_discrete_map=color_map
     )
@@ -263,7 +302,7 @@ def create_3d_lab_plot(input_lab: List[float], closest_lab: List[float],
     )
     fig = go.Figure(data=[dataset_points, input_point, closest_point])
     fig.update_layout(
-        title='🌐 3D LAB Color Space Visualization',
+        title='3D LAB Color Space Visualization',
         scene=dict(
             xaxis_title='L',
             yaxis_title='A',
@@ -286,7 +325,7 @@ def create_delta_e_histogram(delta_e_values: np.ndarray) -> go.Figure:
     fig = px.histogram(
         x=delta_e_values,
         nbins=30,
-        title='📊 Delta-E Distribution',
+        title='Delta-E Distribution',
         labels={'x': 'Delta-E Value', 'y': 'Count'},
         template='plotly_dark',
         opacity=0.75
@@ -307,7 +346,7 @@ def create_color_density_heatmap(dataset_df: pd.DataFrame) -> go.Figure:
         y='B',
         nbinsx=50,
         nbinsy=50,
-        title='🔥 Color Density Heatmap in A-B Plane',
+        title='Color Density Heatmap in A-B Plane',
         labels={'A': 'A Component', 'B': 'B Component'},
         color_continuous_scale='Viridis',
         template='plotly_dark'
@@ -350,7 +389,7 @@ def create_pairwise_scatter_matrix(dataset_df: pd.DataFrame, input_lab: List[flo
     )
     fig_splom = go.Figure(data=[splom_trace])
     fig_splom.update_layout(
-        title='🔍 Pairwise LAB Relationships',
+        title='Pairwise LAB Relationships',
         template='plotly_dark',
         dragmode='select',
         height=800
@@ -397,8 +436,8 @@ def load_dataset(uploaded_file: Any) -> pd.DataFrame:
 # Main Application
 # =============================================================================
 def main() -> None:
-    st.set_page_config(page_title="🎨 Enhanced LAB Color Analyzer", layout="wide", page_icon="🎨")
-    st.title("🎨 Enhanced LAB Color Analyzer")
+    st.set_page_config(page_title="Enhanced LAB Color Analyzer", layout="wide", page_icon="🎨")
+    st.title("Enhanced LAB Color Analyzer")
     st.markdown(
         """
         Welcome to the **Enhanced LAB Color Analyzer**!  
@@ -408,16 +447,18 @@ def main() -> None:
     )
 
     # Sidebar: Upload and Input Options
-    st.sidebar.header("🔧 Upload & Input")
-    uploaded_file = st.sidebar.file_uploader("📂 Upload 'iscc_nbs_lab_colors.csv'", type=['csv'])
+    st.sidebar.header("Upload & Input")
+    uploaded_file = st.sidebar.file_uploader("Upload 'iscc_nbs_lab_colors.csv'", type=['csv'])
+    linked_data_file = st.sidebar.file_uploader("Upload Getty AAT Linked Data JSON", type=['json'])
     
-    with st.sidebar.expander("ℹ️ Instructions", expanded=False):
+    with st.sidebar.expander("Instructions", expanded=False):
         st.markdown(
             """
             1. **Upload Dataset:** Upload the CSV file containing LAB values and color names.
-            2. **Input LAB Color:** Choose your input method (sliders or manual entry).
-            3. **Choose Delta-E Metric:** Select between Euclidean ΔE*76 or CIEDE2000.
-            4. **Find Closest Color:** Click the button to see the closest matching color and various visualizations.
+            2. **Upload Linked Data (Optional):** Upload the JSON file with Getty AAT controlled vocabulary information.
+            3. **Input LAB Color:** Choose your input method (sliders or manual entry).
+            4. **Choose Delta-E Metric:** Select between Euclidean ΔE*76 or CIEDE2000.
+            5. **Find Closest Color:** Click the button to see the closest matching color and various visualizations.
             """
         )
 
@@ -429,7 +470,7 @@ def main() -> None:
         delta_e_func = calculate_delta_e_ciede2000
 
     if uploaded_file is None:
-        st.info("📂 Please upload your 'iscc_nbs_lab_colors.csv' file to begin, nyah~!")
+        st.info("Please upload your 'iscc_nbs_lab_colors.csv' file to begin.")
         debug_log("No dataset file uploaded.")
         return
 
@@ -438,41 +479,52 @@ def main() -> None:
         debug_log("Dataset is empty after loading; terminating process.")
         return
 
-    st.success("✅ Dataset uploaded and validated successfully.")
-    with st.expander("📊 View Dataset Preview", expanded=False):
+    st.success("Dataset uploaded and validated successfully.")
+    with st.expander("View Dataset Preview", expanded=False):
         st.dataframe(dataset_df.head())
+
+    # Load Linked Data if available
+    linked_data = {}
+    if linked_data_file is not None:
+        linked_data = load_linked_data(linked_data_file)
 
     # Input Method: Slider vs. Manual Entry
     input_method = st.sidebar.radio("Choose LAB Input Method:", ("Slider Input", "Manual Input"))
     if input_method == "Slider Input":
-        st.sidebar.markdown("### 🖌️ LAB Color via Sliders")
+        st.sidebar.markdown("### LAB Color via Sliders")
         lab_l = st.sidebar.slider("L:", 0.0, 100.0, 50.0, 0.01)
         lab_a = st.sidebar.slider("A:", -128.0, 127.0, 0.0, 0.01)
         lab_b = st.sidebar.slider("B:", -128.0, 127.0, 0.0, 0.01)
     else:
-        st.sidebar.markdown("### 🖌️ LAB Color via Manual Input")
+        st.sidebar.markdown("### LAB Color via Manual Input")
         lab_l = st.sidebar.number_input("L (0-100):", min_value=0.0, max_value=100.0, value=50.0, step=0.1)
         lab_a = st.sidebar.number_input("A (-128 to 127):", min_value=-128.0, max_value=127.0, value=0.0, step=0.1)
         lab_b = st.sidebar.number_input("B (-128 to 127):", min_value=-128.0, max_value=127.0, value=0.0, step=0.1)
 
     input_lab = [lab_l, lab_a, lab_b]
 
-    if st.sidebar.button("🔍 Find Closest Color"):
+    if st.sidebar.button("Find Closest Color"):
         debug_log("User initiated color matching process.")
         if validate_lab_color(input_lab):
-            with st.spinner("Processing, nyah~..."):
+            with st.spinner("Processing..."):
                 closest_color, delta_e = find_closest_color(input_lab, dataset_df, delta_e_func=delta_e_func)
                 if closest_color is not None:
                     closest_color_name = closest_color['Color Name']
+                    # Enhance color name with Linked Data if available
+                    if linked_data:
+                        enhanced_color_name = add_linked_data_info(closest_color_name, linked_data)
+                    else:
+                        enhanced_color_name = closest_color_name
+
                     closest_lab = [closest_color['L'], closest_color['A'], closest_color['B']]
                     input_rgb = lab_to_rgb(input_lab)
                     closest_rgb = lab_to_rgb(closest_lab)
 
-                    st.markdown("### 🟢 **Results:**")
+                    st.markdown("### **Results:**")
                     st.markdown(
                         f"""
                         **Input LAB Color:** L={input_lab[0]}, A={input_lab[1]}, B={input_lab[2]}  
-                        **Closest ISCC-NBS Color:** {closest_color_name}  
+                        **Closest ISCC-NBS Color:** {enhanced_color_name}  
                         **Delta-E Value ({delta_e_metric}):** {delta_e:.2f}  
                         **Closest LAB Color:** L={closest_lab[0]}, A={closest_lab[1]}, B={closest_lab[2]}  
                         **Input RGB Color:** {input_rgb}  
@@ -485,13 +537,13 @@ def main() -> None:
                         "Color Comparison", "LAB Comparison", "3D LAB Plot", "Delta-E Histogram", "Color Density", "Pairwise Scatter"
                     ])
                     with tabs[0]:
-                        fig1 = create_color_comparison_plot(input_rgb, closest_rgb, input_lab, closest_lab, closest_color_name, delta_e)
+                        fig1 = create_color_comparison_plot(input_rgb, closest_rgb, input_lab, closest_lab, enhanced_color_name, delta_e)
                         st.plotly_chart(fig1, use_container_width=True)
                     with tabs[1]:
-                        fig2 = create_lab_comparison_bar(input_lab, closest_lab, closest_color_name, input_rgb, closest_rgb)
+                        fig2 = create_lab_comparison_bar(input_lab, closest_lab, enhanced_color_name, input_rgb, closest_rgb)
                         st.plotly_chart(fig2, use_container_width=True)
                     with tabs[2]:
-                        fig3 = create_3d_lab_plot(input_lab, closest_lab, closest_color_name, dataset_df, input_rgb, closest_rgb)
+                        fig3 = create_3d_lab_plot(input_lab, closest_lab, enhanced_color_name, dataset_df, input_rgb, closest_rgb)
                         st.plotly_chart(fig3, use_container_width=True)
                     with tabs[3]:
                         delta_e_values = delta_e_func(input_lab, dataset_df)
@@ -504,10 +556,10 @@ def main() -> None:
                         fig_splom = create_pairwise_scatter_matrix(dataset_df, input_lab, closest_lab)
                         st.plotly_chart(fig_splom, use_container_width=True)
 
-                    st.markdown("### 📄 **Results Table:**")
+                    st.markdown("### **Results Table:**")
                     results = {
                         'Input LAB': f"L={input_lab[0]}, A={input_lab[1]}, B={input_lab[2]}",
-                        'Closest ISCC-NBS Color': closest_color_name,
+                        'Closest ISCC-NBS Color': enhanced_color_name,
                         'Delta-E Value': f"{delta_e:.2f}",
                         'Closest LAB': f"L={closest_lab[0]}, A={closest_lab[1]}, B={closest_lab[2]}",
                         'Input RGB': input_rgb,
