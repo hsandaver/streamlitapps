@@ -181,10 +181,12 @@ def create_alternative_terms_sunburst(df: pd.DataFrame) -> go.Figure:
     alt_df["id"] = alt_df.index.astype(str)
     alt_df["parent"] = alt_df["Language"].apply(lambda x: f"lang_{x}")
     alt_df = alt_df.rename(columns={"Term": "name"})
-    # Combine into one DataFrame
+    # Combine all rows into one DataFrame
     sunburst_df = pd.concat([root_df, lang_df, alt_df[["id", "parent", "name"]]], ignore_index=True)
+    # Use ids as well to force a proper hierarchy
     fig = px.sunburst(
         sunburst_df,
+        ids="id",
         names="name",
         parents="parent",
         title="Alternative Terms Sunburst Chart"
@@ -495,7 +497,7 @@ def main() -> None:
             if not df_alternatives.empty:
                 st.markdown("### **Alternative Color Terms from RDF:**")
                 st.dataframe(df_alternatives)
-                # Display a sunburst chart for a prettier visualization
+                # Display a sunburst chart visualization
                 fig_sunburst = create_alternative_terms_sunburst(df_alternatives)
                 st.plotly_chart(fig_sunburst, use_container_width=True)
             else:
