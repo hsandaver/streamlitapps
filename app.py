@@ -13,7 +13,7 @@ from colormath.color_diff import delta_e_cie2000
 from typing import Union, List, Tuple, Optional, Any
 from io import StringIO
 
-# Monkey-patch numpy.asscalar for compatibility if needed
+# Monkey-patch numpy.asscalar if needed
 if not hasattr(np, 'asscalar'):
     np.asscalar = lambda a: a.item() if isinstance(a, np.ndarray) else a
 
@@ -143,9 +143,7 @@ def extract_alternative_terms_rdf(rdf_file: Any) -> pd.DataFrame:
     
     # Additionally, scan for any Activity description elements that might include alternative terms.
     for s, p, o in g.triples((None, None, None)):
-        # Check if the predicate ends with "description" and the object is a literal
         if p.endswith("description") and isinstance(o, Literal):
-            # Look for a pattern like "hemlock green (1000128566);"
             m = re.search(r'([A-Za-z\s,-]+)\s*\(\d+\)', str(o))
             if m:
                 term_extracted = m.group(1).strip()
@@ -154,26 +152,43 @@ def extract_alternative_terms_rdf(rdf_file: Any) -> pd.DataFrame:
     df = pd.DataFrame(rows).drop_duplicates()
     return df
 
-def create_alternative_terms_bubble_chart(df: pd.DataFrame) -> go.Figure:
+def create_alternative_terms_sunburst(df: pd.DataFrame) -> go.Figure:
     """
-    Create a bubble chart visualization for the alternative terms.
-    Each term is displayed as a bubble; the bubble size is proportional to the term length.
+    Create a sunburst chart for the alternative terms.
+    The hierarchy is: Root (main term) -> Language -> Alternative Term.
+    The main term is determined as the first English label if available.
     """
-    # Calculate term length for bubble size
-    df = df.copy()
-    df["TermLength"] = df["Term"].apply(lambda x: len(x))
-    df["Index"] = range(len(df))
-    fig = px.scatter(
-        df,
-        x="Language",
-        y="Index",
-        size="TermLength",
-        color="Language",
-        text="Term",
-        title="Alternative Color Terms Bubble Chart"
+    if df.empty:
+        return go.Figure()
+    # Determine the main term (prefer English)
+    df_en = df[df["Language"]=="en"]
+    if not df_en.empty:
+        main_term = df_en.iloc[0]["Term"]
+    else:
+        main_term = df.iloc[0]["Term"]
+    # Filter out rows that exactly match the main term
+    df_alt = df[df["Term"] != main_term].copy()
+    # Build a hierarchy DataFrame
+    # Root node:
+    root_df = pd.DataFrame([{"id": "root", "parent": "", "name": main_term}])
+    # Language groups:
+    lang_df = []
+    for lang in df_alt["Language"].unique():
+        lang_df.append({"id": f"lang_{lang}", "parent": "root", "name": lang})
+    lang_df = pd.DataFrame(lang_df)
+    # Alternative terms:
+    alt_df = df_alt.copy()
+    alt_df["id"] = alt_df.index.astype(str)
+    alt_df["parent"] = alt_df["Language"].apply(lambda x: f"lang_{x}")
+    alt_df = alt_df.rename(columns={"Term": "name"})
+    # Combine into one DataFrame
+    sunburst_df = pd.concat([root_df, lang_df, alt_df[["id", "parent", "name"]]], ignore_index=True)
+    fig = px.sunburst(
+        sunburst_df,
+        names="name",
+        parents="parent",
+        title="Alternative Terms Sunburst Chart"
     )
-    fig.update_traces(textposition="top center")
-    fig.update_layout(yaxis=dict(showticklabels=False), xaxis_title="Language")
     return fig
 
 # =============================================================================
@@ -480,9 +495,9 @@ def main() -> None:
             if not df_alternatives.empty:
                 st.markdown("### **Alternative Color Terms from RDF:**")
                 st.dataframe(df_alternatives)
-                # Additionally, display a bubble chart visualization of the terms.
-                fig_bubble = create_alternative_terms_bubble_chart(df_alternatives)
-                st.plotly_chart(fig_bubble, use_container_width=True)
+                # Display a sunburst chart for a prettier visualization
+                fig_sunburst = create_alternative_terms_sunburst(df_alternatives)
+                st.plotly_chart(fig_sunburst, use_container_width=True)
             else:
                 st.warning("No alternative terms found in the RDF.")
         except Exception as e:
