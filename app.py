@@ -5,6 +5,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import logging
 import json
+import networkx as nx  # Added for network graph creation
 from colormath.color_objects import LabColor, sRGBColor
 from colormath.color_conversions import convert_color
 from colormath.color_diff import delta_e_cie2000
@@ -159,35 +160,103 @@ def load_linked_data(linked_data_file: Any) -> dict:
         debug_log(f"Error loading Linked Data JSON file: {e}")
         return {}
 
-def add_linked_data_info(color_name: str, linked_data: dict) -> str:
+def create_semantic_relationship_graph(linked_data: dict) -> go.Figure:
     """
-    Enhance the color name with Getty Linked Data information if available.
-    This function checks if the provided color name matches the Getty JSON's _label
-    or any of its 'identified_by' contents (case-insensitive) and, if so, creates a hyperlink
-    using the Getty record's identifier.
+    Build and return a network graph (using Plotly) that visualizes semantic relationships
+    from the Getty JSON.
     """
-    if not linked_data:
-        return color_name
+    G = nx.DiGraph()
+    central_id = linked_data.get("id", "central")
+    central_label = linked_data.get("_label", "Central")
+    G.add_node(central_id, label=central_label)
     
-    # Check if the main label matches (ignoring case)
-    label = linked_data.get("_label", "")
-    if label.lower() == color_name.lower():
-        url = linked_data.get("id", "")
-        if url:
-            return f'<a href="{url}" target="_blank">{color_name}</a>'
+    # Define keys in the JSON that represent semantic relationships
+    relationship_keys = ["broader", "rdfs:seeAlso", "subject_of", "la:related_from_by", "skos:inScheme"]
     
-    # Alternatively, check in the identified_by array for any matching content
-    for identifier in linked_data.get("identified_by", []):
-        content = identifier.get("content", "")
-        if content.lower() == color_name.lower():
-            url = linked_data.get("id", "")
-            if url:
-                return f'<a href="{url}" target="_blank">{color_name}</a>'
+    for key in relationship_keys:
+        if key in linked_data:
+            value = linked_data[key]
+            if isinstance(value, list):
+                for item in value:
+                    if key == "la:related_from_by":
+                        target_id = item.get("la:relates_to", {}).get("id")
+                        target_label = target_id  # No explicit label provided
+                    else:
+                        target_id = item.get("id")
+                        target_label = item.get("_label") or item.get("content") or target_id
+                    if target_id:
+                        G.add_node(target_id, label=target_label)
+                        G.add_edge(central_id, target_id, relationship=key)
+            elif isinstance(value, dict):
+                target_id = value.get("id")
+                target_label = value.get("_label") or value.get("content") or target_id
+                if target_id:
+                    G.add_node(target_id, label=target_label)
+                    G.add_edge(central_id, target_id, relationship=key)
     
-    return color_name
+    # Compute layout for nodes
+    pos = nx.spring_layout(G)
+    
+    # Build edge traces
+    edge_x = []
+    edge_y = []
+    for edge in G.edges(data=True):
+        x0, y0 = pos[edge[0]]
+        x1, y1 = pos[edge[1]]
+        edge_x.extend([x0, x1, None])
+        edge_y.extend([y0, y1, None])
+    
+    edge_trace = go.Scatter(
+        x=edge_x, y=edge_y,
+        line=dict(width=1, color='#888'),
+        hoverinfo='none',
+        mode='lines'
+    )
+    
+    # Build node traces
+    node_x = []
+    node_y = []
+    node_text = []
+    for node in G.nodes(data=True):
+        x, y = pos[node[0]]
+        node_x.append(x)
+        node_y.append(y)
+        node_text.append(node[1].get("label", node[0]))
+    
+    node_trace = go.Scatter(
+        x=node_x, y=node_y,
+        mode='markers+text',
+        text=node_text,
+        textposition="bottom center",
+        marker=dict(
+            showscale=False,
+            color='#FFA500',
+            size=20,
+            line_width=2
+        )
+    )
+    
+    fig = go.Figure(data=[edge_trace, node_trace],
+                    layout=go.Layout(
+                        title="Semantic Relationships",
+                        titlefont_size=16,
+                        showlegend=False,
+                        hovermode='closest',
+                        margin=dict(b=20,l=5,r=5,t=40),
+                        annotations=[dict(
+                            text="Semantic network of Getty AAT term relationships",
+                            showarrow=False,
+                            xref="paper", yref="paper",
+                            x=0.005, y=-0.002
+                        )],
+                        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+                        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)
+                    ))
+    debug_log("Semantic relationship graph created successfully.")
+    return fig
 
 # =============================================================================
-# Visualization Functions
+# Visualization Functions (Other)
 # =============================================================================
 def create_color_comparison_plot(input_rgb: Tuple[int, int, int], closest_rgb: Tuple[int, int, int],
                                  input_lab: List[float], closest_lab: List[float],
@@ -520,12 +589,6 @@ def main() -> None:
                 closest_color, delta_e = find_closest_color(input_lab, dataset_df, delta_e_func=delta_e_func)
                 if closest_color is not None:
                     closest_color_name = closest_color['Color Name']
-                    # Enhance color name with Getty Linked Data if available
-                    if linked_data:
-                        enhanced_color_name = add_linked_data_info(closest_color_name, linked_data)
-                    else:
-                        enhanced_color_name = closest_color_name
-
                     closest_lab = [closest_color['L'], closest_color['A'], closest_color['B']]
                     input_rgb = lab_to_rgb(input_lab)
                     closest_rgb = lab_to_rgb(closest_lab)
@@ -534,7 +597,7 @@ def main() -> None:
                     st.markdown(
                         f"""
                         **Input LAB Color:** L={input_lab[0]}, A={input_lab[1]}, B={input_lab[2]}  
-                        **Closest ISCC-NBS Color:** {enhanced_color_name}  
+                        **Closest ISCC-NBS Color:** {closest_color_name}  
                         **Delta-E Value ({delta_e_metric}):** {delta_e:.2f}  
                         **Closest LAB Color:** L={closest_lab[0]}, A={closest_lab[1]}, B={closest_lab[2]}  
                         **Input RGB Color:** {input_rgb}  
@@ -547,13 +610,13 @@ def main() -> None:
                         "Color Comparison", "LAB Comparison", "3D LAB Plot", "Delta-E Histogram", "Color Density", "Pairwise Scatter"
                     ])
                     with tabs[0]:
-                        fig1 = create_color_comparison_plot(input_rgb, closest_rgb, input_lab, closest_lab, enhanced_color_name, delta_e)
+                        fig1 = create_color_comparison_plot(input_rgb, closest_rgb, input_lab, closest_lab, closest_color_name, delta_e)
                         st.plotly_chart(fig1, use_container_width=True)
                     with tabs[1]:
-                        fig2 = create_lab_comparison_bar(input_lab, closest_lab, enhanced_color_name, input_rgb, closest_rgb)
+                        fig2 = create_lab_comparison_bar(input_lab, closest_lab, closest_color_name, input_rgb, closest_rgb)
                         st.plotly_chart(fig2, use_container_width=True)
                     with tabs[2]:
-                        fig3 = create_3d_lab_plot(input_lab, closest_lab, enhanced_color_name, dataset_df, input_rgb, closest_rgb)
+                        fig3 = create_3d_lab_plot(input_lab, closest_lab, closest_color_name, dataset_df, input_rgb, closest_rgb)
                         st.plotly_chart(fig3, use_container_width=True)
                     with tabs[3]:
                         delta_e_values = delta_e_func(input_lab, dataset_df)
@@ -569,7 +632,7 @@ def main() -> None:
                     st.markdown("### **Results Table:**")
                     results = {
                         'Input LAB': f"L={input_lab[0]}, A={input_lab[1]}, B={input_lab[2]}",
-                        'Closest ISCC-NBS Color': enhanced_color_name,
+                        'Closest ISCC-NBS Color': closest_color_name,
                         'Delta-E Value': f"{delta_e:.2f}",
                         'Closest LAB': f"L={closest_lab[0]}, A={closest_lab[1]}, B={closest_lab[2]}",
                         'Input RGB': input_rgb,
@@ -590,6 +653,12 @@ def main() -> None:
                     debug_log("Closest color not found; process terminated.")
         else:
             debug_log("Input LAB color validation failed.")
+
+    # If Getty Linked Data is provided, display its semantic relationships visually.
+    if linked_data:
+        st.markdown("### **Semantic Relationships from Getty JSON:**")
+        fig_sem = create_semantic_relationship_graph(linked_data)
+        st.plotly_chart(fig_sem, use_container_width=True)
 
 if __name__ == "__main__":
     main()
