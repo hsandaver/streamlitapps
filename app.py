@@ -5,14 +5,15 @@ import plotly.express as px
 import plotly.graph_objects as go
 import logging
 import json
-import networkx as nx  # For network graph creation
+import networkx as nx  # For potential network visualizations
+from rdflib import Graph, URIRef, Namespace, Literal
 from colormath.color_objects import LabColor, sRGBColor
 from colormath.color_conversions import convert_color
 from colormath.color_diff import delta_e_cie2000
 from typing import Union, List, Tuple, Optional, Any
 from io import StringIO
 
-# Monkey-patch numpy.asscalar for compatibility with colormath (numpy.asscalar is deprecated in newer versions)
+# Monkey-patch numpy.asscalar for compatibility with colormath (if needed)
 if not hasattr(np, 'asscalar'):
     np.asscalar = lambda a: a.item() if isinstance(a, np.ndarray) else a
 
@@ -30,28 +31,20 @@ def debug_log(message: str) -> None:
     logging.debug(message)
 
 # =============================================================================
-# Utility Functions
+# LAB Color Analysis Functions (unchanged)
 # =============================================================================
 def validate_lab_color(lab: Union[List[float], Tuple[float, float, float], np.ndarray]) -> bool:
-    """
-    Validate that the LAB color is a list, tuple, or numpy array of three numerical values.
-    
-    Returns:
-        bool: True if valid, False otherwise.
-    """
     debug_log(f"Validating LAB color: {lab}")
     if not isinstance(lab, (list, tuple, np.ndarray)) or len(lab) != 3:
         st.error("Input LAB color must be a list, tuple, or array of three numerical values.")
         debug_log("Validation failed: Incorrect type or length")
         return False
-
     try:
         L, A, B = float(lab[0]), float(lab[1]), float(lab[2])
     except (ValueError, TypeError) as e:
         st.error("LAB components must be numerical values.")
         debug_log(f"Validation failed: LAB conversion error - {e}")
         return False
-
     if not (0 <= L <= 100):
         st.error("L component must be between 0 and 100.")
         debug_log("Validation failed: L component out of range")
@@ -64,18 +57,11 @@ def validate_lab_color(lab: Union[List[float], Tuple[float, float, float], np.nd
         st.error("B component must be between -128 and 127.")
         debug_log("Validation failed: B component out of range")
         return False
-
     debug_log("LAB color validation passed")
     return True
 
 @st.cache_data(show_spinner=False)
 def lab_to_rgb(lab_color: Union[List[float], Tuple[float, float, float], np.ndarray]) -> Tuple[int, int, int]:
-    """
-    Convert a LAB color to its RGB representation.
-    
-    Returns:
-        Tuple[int, int, int]: RGB color values clamped between 0 and 255.
-    """
     debug_log(f"Converting LAB to RGB for: {lab_color}")
     try:
         lab = LabColor(lab_l=lab_color[0], lab_a=lab_color[1], lab_b=lab_color[2])
@@ -94,9 +80,6 @@ def lab_to_rgb(lab_color: Union[List[float], Tuple[float, float, float], np.ndar
 
 def calculate_delta_e_euclidean(input_lab: Union[List[float], Tuple[float, float, float]], 
                                 dataset_df: pd.DataFrame) -> np.ndarray:
-    """
-    Calculate Delta-E using the simple Euclidean distance (ΔE*76).
-    """
     debug_log("Calculating Euclidean Delta-E (ΔE*76).")
     input_lab_arr = np.array(input_lab)
     delta_e = np.linalg.norm(dataset_df[['L', 'A', 'B']].values - input_lab_arr, axis=1)
@@ -105,9 +88,6 @@ def calculate_delta_e_euclidean(input_lab: Union[List[float], Tuple[float, float
 
 def calculate_delta_e_ciede2000(input_lab: Union[List[float], Tuple[float, float, float]], 
                                 dataset_df: pd.DataFrame) -> np.ndarray:
-    """
-    Calculate Delta-E using the CIEDE2000 formula.
-    """
     debug_log("Calculating CIEDE2000 Delta-E.")
     input_lab_obj = LabColor(lab_l=input_lab[0], lab_a=input_lab[1], lab_b=input_lab[2])
     delta_e_list = []
@@ -121,12 +101,6 @@ def calculate_delta_e_ciede2000(input_lab: Union[List[float], Tuple[float, float
 def find_closest_color(input_lab: Union[List[float], Tuple[float, float, float]], 
                        dataset_df: pd.DataFrame,
                        delta_e_func=calculate_delta_e_euclidean) -> Tuple[Optional[pd.Series], Optional[float]]:
-    """
-    Find the closest matching color from the dataset based on the Delta-E distance.
-    
-    Returns:
-        Tuple containing the closest color row and its Delta-E value.
-    """
     debug_log(f"Finding closest color for input LAB: {input_lab}")
     delta_e_values = delta_e_func(input_lab, dataset_df)
     if np.all(np.isnan(delta_e_values)):
@@ -140,124 +114,41 @@ def find_closest_color(input_lab: Union[List[float], Tuple[float, float, float]]
     return closest_color, min_delta_e
 
 # =============================================================================
-# Linked Data Enhancements
+# RDF Alternative Terms Extraction
 # =============================================================================
-@st.cache_data(show_spinner=False)
-def load_linked_data(linked_data_file: Any) -> dict:
+def extract_alternative_terms_rdf(rdf_file: Any) -> pd.DataFrame:
     """
-    Load Getty Linked Data JSON.
-    
-    Returns:
-        dict: The parsed JSON data.
+    Parse an uploaded RDF (XML) file using rdflib and extract alternative color terms.
+    This function looks for all rdfs:label and skos:altLabel values for the subject
+    http://vocab.getty.edu/aat/300128563 and returns a DataFrame with the term and language.
     """
-    debug_log("Loading Linked Data from JSON file.")
-    try:
-        linked_data = json.load(linked_data_file)
-        debug_log("Linked Data loaded successfully.")
-        return linked_data
-    except Exception as e:
-        st.error(f"Error loading Linked Data JSON file: {e}")
-        debug_log(f"Error loading Linked Data JSON file: {e}")
-        return {}
-
-def create_semantic_relationship_graph(linked_data: dict) -> go.Figure:
-    """
-    Build and return a network graph (using Plotly) that visualizes semantic relationships
-    from the Getty JSON.
-    """
-    G = nx.DiGraph()
-    central_id = linked_data.get("id", "central")
-    central_label = linked_data.get("_label", "Central")
-    G.add_node(central_id, label=central_label)
+    g = Graph()
+    # Parse the uploaded RDF file (assuming XML format)
+    g.parse(file=rdf_file, format="xml")
     
-    # Define keys in the JSON that represent semantic relationships
-    relationship_keys = ["broader", "rdfs:seeAlso", "subject_of", "la:related_from_by", "skos:inScheme"]
+    # Define namespaces
+    RDFS = Namespace("http://www.w3.org/2000/01/rdf-schema#")
+    SKOS = Namespace("http://www.w3.org/2004/02/skos/core#")
     
-    for key in relationship_keys:
-        if key in linked_data:
-            value = linked_data[key]
-            if isinstance(value, list):
-                for item in value:
-                    if key == "la:related_from_by":
-                        target_id = item.get("la:relates_to", {}).get("id")
-                        target_label = target_id  # No explicit label provided
-                    else:
-                        target_id = item.get("id")
-                        target_label = item.get("_label") or item.get("content") or target_id
-                    if target_id:
-                        G.add_node(target_id, label=target_label)
-                        G.add_edge(central_id, target_id, relationship=key)
-            elif isinstance(value, dict):
-                target_id = value.get("id")
-                target_label = value.get("_label") or value.get("content") or target_id
-                if target_id:
-                    G.add_node(target_id, label=target_label)
-                    G.add_edge(central_id, target_id, relationship=key)
+    # Our subject of interest
+    subject_uri = URIRef("http://vocab.getty.edu/aat/300128563")
     
-    # Compute layout for nodes
-    pos = nx.spring_layout(G)
+    rows = []
+    # Query for rdfs:label values
+    for label in g.objects(subject=subject_uri, predicate=RDFS.label):
+        if isinstance(label, Literal):
+            rows.append({"Term": str(label), "Language": label.language})
     
-    # Build edge traces
-    edge_x = []
-    edge_y = []
-    for edge in G.edges(data=True):
-        x0, y0 = pos[edge[0]]
-        x1, y1 = pos[edge[1]]
-        edge_x.extend([x0, x1, None])
-        edge_y.extend([y0, y1, None])
+    # Query for skos:altLabel values (if present)
+    for alt in g.objects(subject=subject_uri, predicate=SKOS.altLabel):
+        if isinstance(alt, Literal):
+            rows.append({"Term": str(alt), "Language": alt.language})
     
-    edge_trace = go.Scatter(
-        x=edge_x, y=edge_y,
-        line=dict(width=1, color='#888'),
-        hoverinfo='none',
-        mode='lines'
-    )
-    
-    # Build node traces
-    node_x = []
-    node_y = []
-    node_text = []
-    for node in G.nodes(data=True):
-        x, y = pos[node[0]]
-        node_x.append(x)
-        node_y.append(y)
-        node_text.append(node[1].get("label", node[0]))
-    
-    node_trace = go.Scatter(
-        x=node_x, y=node_y,
-        mode='markers+text',
-        text=node_text,
-        textposition="bottom center",
-        marker=dict(
-            showscale=False,
-            color='#FFA500',
-            size=20,
-            line_width=2
-        )
-    )
-    
-    fig = go.Figure(
-        data=[edge_trace, node_trace],
-        layout=go.Layout(
-            title=dict(text="Semantic Relationships", font=dict(size=16)),
-            showlegend=False,
-            hovermode='closest',
-            margin=dict(b=20, l=5, r=5, t=40),
-            annotations=[dict(
-                text="Semantic network of Getty AAT term relationships",
-                showarrow=False,
-                xref="paper", yref="paper",
-                x=0.005, y=-0.002
-            )],
-            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)
-        )
-    )
-    debug_log("Semantic relationship graph created successfully.")
-    return fig
+    df = pd.DataFrame(rows).drop_duplicates()
+    return df
 
 # =============================================================================
-# Visualization Functions (Other)
+# Other Visualization Functions (unchanged)
 # =============================================================================
 def create_color_comparison_plot(input_rgb: Tuple[int, int, int], closest_rgb: Tuple[int, int, int],
                                  input_lab: List[float], closest_lab: List[float],
@@ -270,7 +161,6 @@ def create_color_comparison_plot(input_rgb: Tuple[int, int, int], closest_rgb: T
                 f"L={closest_lab[0]}, A={closest_lab[1]}, B={closest_lab[2]}"],
         'Delta-E': [delta_e, 'N/A']
     })
-
     fig = px.scatter(
         data_frame=data,
         x=[0, 1],
@@ -446,14 +336,12 @@ def create_pairwise_scatter_matrix(dataset_df: pd.DataFrame, input_lab: List[flo
     input_row = {'L': input_lab[0], 'A': input_lab[1], 'B': input_lab[2], 'Color Name': 'Input Color'}
     closest_row = {'L': closest_lab[0], 'A': closest_lab[1], 'B': closest_lab[2], 'Color Name': 'Closest Color'}
     splom_df = pd.concat([splom_df, pd.DataFrame([input_row, closest_row])], ignore_index=True)
-
     cache_rgb = {}
     def map_color(color_name: str, lab_values: List[float]) -> str:
         key = tuple(lab_values)
         if key not in cache_rgb:
             cache_rgb[key] = f'rgb{lab_to_rgb(lab_values)}'
         return cache_rgb[key]
-
     splom_df['Color Group'] = splom_df.apply(lambda row: map_color(row['Color Name'], [row['L'], row['A'], row['B']]), axis=1)
     splom_trace = go.Splom(
         dimensions=[
@@ -480,10 +368,8 @@ def create_pairwise_scatter_matrix(dataset_df: pd.DataFrame, input_lab: List[flo
 def display_results_table(results: dict) -> None:
     debug_log("Displaying results table.")
     df = pd.DataFrame([results])
-
     def color_rgb(cell: str) -> str:
         return f'<div style="background-color:{cell}; width:100px; height:20px;"></div>'
-
     df['Input RGB'] = df['Input RGB'].apply(lambda x: color_rgb(f'rgb{x[0]}, {x[1]}, {x[2]}'))
     df['Closest RGB'] = df['Closest RGB'].apply(lambda x: color_rgb(f'rgb{x[0]}, {x[1]}, {x[2]}'))
     st.markdown(df.to_html(escape=False, index=False), unsafe_allow_html=True)
@@ -498,7 +384,6 @@ def load_dataset(uploaded_file: Any) -> pd.DataFrame:
         st.error(f"Error reading CSV file: {e}")
         debug_log(f"Error reading CSV file: {e}")
         return pd.DataFrame()
-        
     required_columns = {'L', 'A', 'B', 'Color Name'}
     if not required_columns.issubset(set(dataset_df.columns)):
         missing = required_columns - set(dataset_df.columns)
@@ -522,39 +407,35 @@ def main() -> None:
         """
         Welcome to the **Enhanced LAB Color Analyzer**!  
         Upload your **ISCC-NBS LAB colors** dataset and input your **LAB color** values to find the closest matching color with detailed visualizations.  
-        Use the sidebar to upload your dataset and choose your input method.
+        You may also upload an RDF file (in XML format) containing alternative color terms for Getty AAT.
         """
     )
-
-    # Sidebar: Upload and Input Options
+    # Sidebar Upload Options
     st.sidebar.header("Upload & Input")
-    uploaded_file = st.sidebar.file_uploader("Upload 'iscc_nbs_lab_colors.csv'", type=['csv'])
-    linked_data_file = st.sidebar.file_uploader("Upload Getty AAT Linked Data JSON", type=['json'])
+    csv_file = st.sidebar.file_uploader("Upload 'iscc_nbs_lab_colors.csv'", type=['csv'])
+    rdf_file = st.sidebar.file_uploader("Upload Getty AAT RDF (XML)", type=['xml'])
     
     with st.sidebar.expander("Instructions", expanded=False):
         st.markdown(
             """
             1. **Upload Dataset:** Upload the CSV file containing LAB values and color names.
-            2. **Upload Linked Data (Optional):** Upload the JSON file with Getty AAT controlled vocabulary information.
+            2. **Upload RDF (Optional):** Upload the RDF file with Getty AAT color terms.
             3. **Input LAB Color:** Choose your input method (sliders or manual entry).
             4. **Choose Delta-E Metric:** Select between Euclidean ΔE*76 or CIEDE2000.
             5. **Find Closest Color:** Click the button to see the closest matching color and various visualizations.
             """
         )
-
+    
     # Let the user select the Delta-E metric
     delta_e_metric = st.sidebar.radio("Select Delta-E metric:", ("Euclidean ΔE76", "CIEDE2000"))
-    if delta_e_metric == "Euclidean ΔE76":
-        delta_e_func = calculate_delta_e_euclidean
-    else:
-        delta_e_func = calculate_delta_e_ciede2000
+    delta_e_func = calculate_delta_e_euclidean if delta_e_metric == "Euclidean ΔE76" else calculate_delta_e_ciede2000
 
-    if uploaded_file is None:
+    if csv_file is None:
         st.info("Please upload your 'iscc_nbs_lab_colors.csv' file to begin.")
-        debug_log("No dataset file uploaded.")
+        debug_log("No CSV dataset uploaded.")
         return
 
-    dataset_df = load_dataset(uploaded_file)
+    dataset_df = load_dataset(csv_file)
     if dataset_df.empty:
         debug_log("Dataset is empty after loading; terminating process.")
         return
@@ -562,13 +443,21 @@ def main() -> None:
     st.success("Dataset uploaded and validated successfully.")
     with st.expander("View Dataset Preview", expanded=False):
         st.dataframe(dataset_df.head())
-
-    # Load Linked Data if available
-    linked_data = {}
-    if linked_data_file is not None:
-        linked_data = load_linked_data(linked_data_file)
-
-    # Input Method: Slider vs. Manual Entry
+    
+    # If an RDF file is uploaded, extract and display alternative terms
+    if rdf_file is not None:
+        try:
+            df_alternatives = extract_alternative_terms_rdf(rdf_file)
+            if not df_alternatives.empty:
+                st.markdown("### **Alternative Color Terms from RDF:**")
+                st.dataframe(df_alternatives)
+            else:
+                st.warning("No alternative terms found in the RDF.")
+        except Exception as e:
+            st.error(f"Error processing RDF file: {e}")
+            debug_log(f"Error processing RDF file: {e}")
+    
+    # LAB Color Input Options
     input_method = st.sidebar.radio("Choose LAB Input Method:", ("Slider Input", "Manual Input"))
     if input_method == "Slider Input":
         st.sidebar.markdown("### LAB Color via Sliders")
@@ -580,9 +469,9 @@ def main() -> None:
         lab_l = st.sidebar.number_input("L (0-100):", min_value=0.0, max_value=100.0, value=50.0, step=0.1)
         lab_a = st.sidebar.number_input("A (-128 to 127):", min_value=-128.0, max_value=127.0, value=0.0, step=0.1)
         lab_b = st.sidebar.number_input("B (-128 to 127):", min_value=-128.0, max_value=127.0, value=0.0, step=0.1)
-
+    
     input_lab = [lab_l, lab_a, lab_b]
-
+    
     if st.sidebar.button("Find Closest Color"):
         debug_log("User initiated color matching process.")
         if validate_lab_color(input_lab):
@@ -593,7 +482,6 @@ def main() -> None:
                     closest_lab = [closest_color['L'], closest_color['A'], closest_color['B']]
                     input_rgb = lab_to_rgb(input_lab)
                     closest_rgb = lab_to_rgb(closest_lab)
-
                     st.markdown("### **Results:**")
                     st.markdown(
                         f"""
@@ -605,8 +493,6 @@ def main() -> None:
                         **Closest RGB Color:** {closest_rgb}
                         """
                     )
-
-                    # Organize visualizations into tabs
                     tabs = st.tabs([
                         "Color Comparison", "LAB Comparison", "3D LAB Plot", "Delta-E Histogram", "Color Density", "Pairwise Scatter"
                     ])
@@ -629,7 +515,6 @@ def main() -> None:
                     with tabs[5]:
                         fig_splom = create_pairwise_scatter_matrix(dataset_df, input_lab, closest_lab)
                         st.plotly_chart(fig_splom, use_container_width=True)
-
                     st.markdown("### **Results Table:**")
                     results = {
                         'Input LAB': f"L={input_lab[0]}, A={input_lab[1]}, B={input_lab[2]}",
@@ -641,8 +526,6 @@ def main() -> None:
                     }
                     display_results_table(results)
                     debug_log("Color matching process completed successfully.")
-
-                    # Offer an export option for the results table
                     csv_results = pd.DataFrame([results]).to_csv(index=False).encode('utf-8')
                     st.download_button(
                         label="Download Results as CSV",
@@ -654,12 +537,6 @@ def main() -> None:
                     debug_log("Closest color not found; process terminated.")
         else:
             debug_log("Input LAB color validation failed.")
-
-    # If Getty Linked Data is provided, display its semantic relationships visually.
-    if linked_data:
-        st.markdown("### **Semantic Relationships from Getty JSON:**")
-        fig_sem = create_semantic_relationship_graph(linked_data)
-        st.plotly_chart(fig_sem, use_container_width=True)
 
 if __name__ == "__main__":
     main()
