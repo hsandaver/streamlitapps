@@ -5,7 +5,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import logging
 import json
-import networkx as nx  # Added for network graph creation
+import networkx as nx  # For network graph creation
 from colormath.color_objects import LabColor, sRGBColor
 from colormath.color_conversions import convert_color
 from colormath.color_diff import delta_e_cie2000
@@ -236,22 +236,23 @@ def create_semantic_relationship_graph(linked_data: dict) -> go.Figure:
         )
     )
     
-    fig = go.Figure(data=[edge_trace, node_trace],
-                    layout=go.Layout(
-                        title="Semantic Relationships",
-                        titlefont_size=16,
-                        showlegend=False,
-                        hovermode='closest',
-                        margin=dict(b=20,l=5,r=5,t=40),
-                        annotations=[dict(
-                            text="Semantic network of Getty AAT term relationships",
-                            showarrow=False,
-                            xref="paper", yref="paper",
-                            x=0.005, y=-0.002
-                        )],
-                        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-                        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)
-                    ))
+    fig = go.Figure(
+        data=[edge_trace, node_trace],
+        layout=go.Layout(
+            title=dict(text="Semantic Relationships", font=dict(size=16)),
+            showlegend=False,
+            hovermode='closest',
+            margin=dict(b=20, l=5, r=5, t=40),
+            annotations=[dict(
+                text="Semantic network of Getty AAT term relationships",
+                showarrow=False,
+                xref="paper", yref="paper",
+                x=0.005, y=-0.002
+            )],
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)
+        )
+    )
     debug_log("Semantic relationship graph created successfully.")
     return fig
 
