@@ -144,10 +144,10 @@ def find_closest_color(input_lab: Union[List[float], Tuple[float, float, float]]
 @st.cache_data(show_spinner=False)
 def load_linked_data(linked_data_file: Any) -> dict:
     """
-    Load Linked Data JSON for Getty AAT controlled vocabulary.
+    Load Getty Linked Data JSON.
     
     Returns:
-        dict: Dictionary mapping color names to their Linked Data information.
+        dict: The parsed JSON data.
     """
     debug_log("Loading Linked Data from JSON file.")
     try:
@@ -161,20 +161,30 @@ def load_linked_data(linked_data_file: Any) -> dict:
 
 def add_linked_data_info(color_name: str, linked_data: dict) -> str:
     """
-    Enhance the color name with Linked Data information if available.
-    
-    Args:
-        color_name (str): The color name from the dataset.
-        linked_data (dict): The linked data mapping from color names to Linked Data information.
-        
-    Returns:
-        str: Enhanced color name with hyperlink if available.
+    Enhance the color name with Getty Linked Data information if available.
+    This function checks if the provided color name matches the Getty JSON's _label
+    or any of its 'identified_by' contents (case-insensitive) and, if so, creates a hyperlink
+    using the Getty record's identifier.
     """
-    if color_name in linked_data and 'url' in linked_data[color_name]:
-        url = linked_data[color_name]['url']
-        return f'<a href="{url}" target="_blank">{color_name}</a>'
-    else:
+    if not linked_data:
         return color_name
+    
+    # Check if the main label matches (ignoring case)
+    label = linked_data.get("_label", "")
+    if label.lower() == color_name.lower():
+        url = linked_data.get("id", "")
+        if url:
+            return f'<a href="{url}" target="_blank">{color_name}</a>'
+    
+    # Alternatively, check in the identified_by array for any matching content
+    for identifier in linked_data.get("identified_by", []):
+        content = identifier.get("content", "")
+        if content.lower() == color_name.lower():
+            url = linked_data.get("id", "")
+            if url:
+                return f'<a href="{url}" target="_blank">{color_name}</a>'
+    
+    return color_name
 
 # =============================================================================
 # Visualization Functions
@@ -510,7 +520,7 @@ def main() -> None:
                 closest_color, delta_e = find_closest_color(input_lab, dataset_df, delta_e_func=delta_e_func)
                 if closest_color is not None:
                     closest_color_name = closest_color['Color Name']
-                    # Enhance color name with Linked Data if available
+                    # Enhance color name with Getty Linked Data if available
                     if linked_data:
                         enhanced_color_name = add_linked_data_info(closest_color_name, linked_data)
                     else:
