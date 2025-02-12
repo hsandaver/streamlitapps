@@ -4,16 +4,16 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 import logging
-import json
 import networkx as nx  # For potential network visualizations
 from rdflib import Graph, URIRef, Namespace, Literal
+import re
 from colormath.color_objects import LabColor, sRGBColor
 from colormath.color_conversions import convert_color
 from colormath.color_diff import delta_e_cie2000
 from typing import Union, List, Tuple, Optional, Any
 from io import StringIO
 
-# Monkey-patch numpy.asscalar for compatibility with colormath (if needed)
+# Monkey-patch numpy.asscalar if needed
 if not hasattr(np, 'asscalar'):
     np.asscalar = lambda a: a.item() if isinstance(a, np.ndarray) else a
 
@@ -114,35 +114,44 @@ def find_closest_color(input_lab: Union[List[float], Tuple[float, float, float]]
     return closest_color, min_delta_e
 
 # =============================================================================
-# RDF Alternative Terms Extraction
+# RDF Alternative Terms Extraction Functions
 # =============================================================================
 def extract_alternative_terms_rdf(rdf_file: Any) -> pd.DataFrame:
     """
     Parse an uploaded RDF (XML) file using rdflib and extract alternative color terms.
-    This function looks for all rdfs:label and skos:altLabel values for the subject
-    http://vocab.getty.edu/aat/300128563 and returns a DataFrame with the term and language.
+    It looks for rdfs:label and skos:altLabel for the subject URI 
+    http://vocab.getty.edu/aat/300128563 and also scans <Activity> description elements.
+    Returns a DataFrame with terms and their language.
     """
+    from rdflib import Graph, URIRef, Namespace
     g = Graph()
-    # Parse the uploaded RDF file (assuming XML format)
     g.parse(file=rdf_file, format="xml")
     
-    # Define namespaces
     RDFS = Namespace("http://www.w3.org/2000/01/rdf-schema#")
     SKOS = Namespace("http://www.w3.org/2004/02/skos/core#")
     
-    # Our subject of interest
     subject_uri = URIRef("http://vocab.getty.edu/aat/300128563")
     
     rows = []
-    # Query for rdfs:label values
+    # Extract labels from the main subject
     for label in g.objects(subject=subject_uri, predicate=RDFS.label):
         if isinstance(label, Literal):
             rows.append({"Term": str(label), "Language": label.language})
-    
-    # Query for skos:altLabel values (if present)
     for alt in g.objects(subject=subject_uri, predicate=SKOS.altLabel):
         if isinstance(alt, Literal):
             rows.append({"Term": str(alt), "Language": alt.language})
+    
+    # Additionally, scan Activity descriptions for terms (e.g., "hemlock green")
+    # This is a simple regex search for any term pattern followed by an identifier in parentheses.
+    for s, p, o in g.triples((None, None, None)):
+        # Look for Activity description elements (assuming they are literals)
+        if p.endswith("description") and isinstance(o, Literal):
+            # Simple regex to extract term before a parenthesis
+            m = re.search(r'([A-Za-z\s,-]+)\s*\(\d+\)', str(o))
+            if m:
+                term_extracted = m.group(1).strip()
+                # We won't have language info here; mark as unknown.
+                rows.append({"Term": term_extracted, "Language": "unknown"})
     
     df = pd.DataFrame(rows).drop_duplicates()
     return df
@@ -410,7 +419,7 @@ def main() -> None:
         You may also upload an RDF file (in XML format) containing alternative color terms for Getty AAT.
         """
     )
-    # Sidebar Upload Options
+    # Sidebar: Upload Options
     st.sidebar.header("Upload & Input")
     csv_file = st.sidebar.file_uploader("Upload 'iscc_nbs_lab_colors.csv'", type=['csv'])
     rdf_file = st.sidebar.file_uploader("Upload Getty AAT RDF (XML)", type=['xml'])
@@ -426,7 +435,7 @@ def main() -> None:
             """
         )
     
-    # Let the user select the Delta-E metric
+    # Delta-E metric selection
     delta_e_metric = st.sidebar.radio("Select Delta-E metric:", ("Euclidean ΔE76", "CIEDE2000"))
     delta_e_func = calculate_delta_e_euclidean if delta_e_metric == "Euclidean ΔE76" else calculate_delta_e_ciede2000
 
