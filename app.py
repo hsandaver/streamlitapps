@@ -13,7 +13,7 @@ from colormath.color_diff import delta_e_cie2000
 from typing import Union, List, Tuple, Optional, Any
 from io import StringIO
 
-# Monkey-patch numpy.asscalar if needed
+# Monkey-patch numpy.asscalar for compatibility if needed
 if not hasattr(np, 'asscalar'):
     np.asscalar = lambda a: a.item() if isinstance(a, np.ndarray) else a
 
@@ -31,7 +31,7 @@ def debug_log(message: str) -> None:
     logging.debug(message)
 
 # =============================================================================
-# LAB Color Analysis Functions (unchanged)
+# LAB Color Analysis Functions
 # =============================================================================
 def validate_lab_color(lab: Union[List[float], Tuple[float, float, float], np.ndarray]) -> bool:
     debug_log(f"Validating LAB color: {lab}")
@@ -120,10 +120,9 @@ def extract_alternative_terms_rdf(rdf_file: Any) -> pd.DataFrame:
     """
     Parse an uploaded RDF (XML) file using rdflib and extract alternative color terms.
     It looks for rdfs:label and skos:altLabel for the subject URI 
-    http://vocab.getty.edu/aat/300128563 and also scans <Activity> description elements.
-    Returns a DataFrame with terms and their language.
+    http://vocab.getty.edu/aat/300128563 and also scans Activity description elements.
+    Returns a DataFrame with the term and language.
     """
-    from rdflib import Graph, URIRef, Namespace
     g = Graph()
     g.parse(file=rdf_file, format="xml")
     
@@ -133,28 +132,49 @@ def extract_alternative_terms_rdf(rdf_file: Any) -> pd.DataFrame:
     subject_uri = URIRef("http://vocab.getty.edu/aat/300128563")
     
     rows = []
-    # Extract labels from the main subject
+    # Extract direct labels (rdfs:label)
     for label in g.objects(subject=subject_uri, predicate=RDFS.label):
         if isinstance(label, Literal):
             rows.append({"Term": str(label), "Language": label.language})
+    # Extract alternative labels (skos:altLabel)
     for alt in g.objects(subject=subject_uri, predicate=SKOS.altLabel):
         if isinstance(alt, Literal):
             rows.append({"Term": str(alt), "Language": alt.language})
     
-    # Additionally, scan Activity descriptions for terms (e.g., "hemlock green")
-    # This is a simple regex search for any term pattern followed by an identifier in parentheses.
+    # Additionally, scan for any Activity description elements that might include alternative terms.
     for s, p, o in g.triples((None, None, None)):
-        # Look for Activity description elements (assuming they are literals)
+        # Check if the predicate ends with "description" and the object is a literal
         if p.endswith("description") and isinstance(o, Literal):
-            # Simple regex to extract term before a parenthesis
+            # Look for a pattern like "hemlock green (1000128566);"
             m = re.search(r'([A-Za-z\s,-]+)\s*\(\d+\)', str(o))
             if m:
                 term_extracted = m.group(1).strip()
-                # We won't have language info here; mark as unknown.
                 rows.append({"Term": term_extracted, "Language": "unknown"})
     
     df = pd.DataFrame(rows).drop_duplicates()
     return df
+
+def create_alternative_terms_bubble_chart(df: pd.DataFrame) -> go.Figure:
+    """
+    Create a bubble chart visualization for the alternative terms.
+    Each term is displayed as a bubble; the bubble size is proportional to the term length.
+    """
+    # Calculate term length for bubble size
+    df = df.copy()
+    df["TermLength"] = df["Term"].apply(lambda x: len(x))
+    df["Index"] = range(len(df))
+    fig = px.scatter(
+        df,
+        x="Language",
+        y="Index",
+        size="TermLength",
+        color="Language",
+        text="Term",
+        title="Alternative Color Terms Bubble Chart"
+    )
+    fig.update_traces(textposition="top center")
+    fig.update_layout(yaxis=dict(showticklabels=False), xaxis_title="Language")
+    return fig
 
 # =============================================================================
 # Other Visualization Functions (unchanged)
@@ -453,13 +473,16 @@ def main() -> None:
     with st.expander("View Dataset Preview", expanded=False):
         st.dataframe(dataset_df.head())
     
-    # If an RDF file is uploaded, extract and display alternative terms
+    # Process RDF file (if provided) and display alternative terms
     if rdf_file is not None:
         try:
             df_alternatives = extract_alternative_terms_rdf(rdf_file)
             if not df_alternatives.empty:
                 st.markdown("### **Alternative Color Terms from RDF:**")
                 st.dataframe(df_alternatives)
+                # Additionally, display a bubble chart visualization of the terms.
+                fig_bubble = create_alternative_terms_bubble_chart(df_alternatives)
+                st.plotly_chart(fig_bubble, use_container_width=True)
             else:
                 st.warning("No alternative terms found in the RDF.")
         except Exception as e:
