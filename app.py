@@ -158,7 +158,7 @@ def create_alternative_terms_sunburst(df: pd.DataFrame, base_color: str = None) 
     The hierarchy is: Root (main term) -> Language -> Alternative Term.
     The main term is determined as the first English label if available.
     
-    If a base_color is provided (e.g., "rgb(255,0,0)"), the chart will use that color
+    If a base_color is provided (e.g., "rgb(128, 130, 100)"), the chart will use that color
     for all segments, mirroring the described color.
     """
     if df.empty:
@@ -504,15 +504,15 @@ def main() -> None:
     with st.expander("View Dataset Preview", expanded=False):
         st.dataframe(dataset_df.head())
     
-    # Process RDF file (if provided) and display alternative terms
+    # Process RDF file (if provided)
+    df_alternatives = None
     if rdf_file is not None:
         try:
             df_alternatives = extract_alternative_terms_rdf(rdf_file)
             if not df_alternatives.empty:
                 st.markdown("### **Alternative Color Terms from RDF:**")
                 st.dataframe(df_alternatives)
-                # Display a sunburst chart visualization
-                # Pass in a base_color if desired, e.g., "rgb(255, 99, 71)"
+                # Show a default sunburst chart with a fallback color if no LAB matching has occurred yet
                 fig_sunburst = create_alternative_terms_sunburst(df_alternatives, base_color="rgb(255, 99, 71)")
                 st.plotly_chart(fig_sunburst, use_container_width=True)
             else:
@@ -557,6 +557,10 @@ def main() -> None:
                         **Closest RGB Color:** {closest_rgb}
                         """
                     )
+                    # If an RDF file was uploaded, update the sunburst chart to mirror the computed color
+                    if df_alternatives is not None and not df_alternatives.empty:
+                        fig_sunburst = create_alternative_terms_sunburst(df_alternatives, base_color=f"rgb{closest_rgb}")
+                        st.plotly_chart(fig_sunburst, use_container_width=True)
                     tabs = st.tabs([
                         "Color Comparison", "LAB Comparison", "3D LAB Plot", "Delta-E Histogram", "Color Density", "Pairwise Scatter"
                     ])
