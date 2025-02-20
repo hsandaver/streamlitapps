@@ -208,42 +208,57 @@ def create_alternative_terms_sunburst(df: pd.DataFrame, base_color: str = None) 
     return fig
 
 # =============================================================================
-# Other Visualization Functions (unchanged)
+# Other Visualization Functions (unchanged except for swatches)
 # =============================================================================
 def create_color_comparison_plot(input_rgb: Tuple[int, int, int], closest_rgb: Tuple[int, int, int],
                                  input_lab: List[float], closest_lab: List[float],
                                  closest_color_name: str, delta_e: float) -> go.Figure:
     debug_log("Creating color comparison plot.")
-    data = pd.DataFrame({
-        'Color Type': ['Input Color', f'Closest: {closest_color_name}'],
-        'RGB': [f'rgb{input_rgb}', f'rgb{closest_rgb}'],
-        'LAB': [f"L={input_lab[0]}, A={input_lab[1]}, B={input_lab[2]}",
-                f"L={closest_lab[0]}, A={closest_lab[1]}, B={closest_lab[2]}"],
-        'Delta-E': [delta_e, 'N/A']
-    })
-    fig = px.scatter(
-        data_frame=data,
-        x=[0, 1],
-        y=[1, 1],
-        color='RGB',
-        hover_data=['Color Type', 'LAB', 'Delta-E'],
-        labels={'x': '', 'y': ''},
-        title='Input Color vs Closest ISCC-NBS Color'
-    )
-    fig.update_traces(marker=dict(size=50, line=dict(width=2, color='DarkSlateGrey')))
+    fig = go.Figure()
+    
+    # Input Color Swatch
+    fig.add_trace(go.Scatter(
+        x=[0],
+        y=[1],
+        mode='markers',
+        marker=dict(
+            size=50,
+            color=f'rgb({input_rgb[0]}, {input_rgb[1]}, {input_rgb[2]})',
+            line=dict(width=2, color='DarkSlateGrey')
+        ),
+        name='Input Color',
+        hovertemplate=f"Input LAB: L={input_lab[0]}, A={input_lab[1]}, B={input_lab[2]}<br>Delta-E: {delta_e:.2f}<extra></extra>"
+    ))
+    
+    # Closest Color Swatch
+    fig.add_trace(go.Scatter(
+        x=[1],
+        y=[1],
+        mode='markers',
+        marker=dict(
+            size=50,
+            color=f'rgb({closest_rgb[0]}, {closest_rgb[1]}, {closest_rgb[2]})',
+            line=dict(width=2, color='DarkSlateGrey')
+        ),
+        name=f'Closest: {closest_color_name}',
+        hovertemplate=f"Closest LAB: L={closest_lab[0]}, A={closest_lab[1]}, B={closest_lab[2]}<extra></extra>"
+    ))
+    
     fig.update_layout(
-        showlegend=False,
-        xaxis=dict(showticklabels=False, showgrid=False, zeroline=False),
-        yaxis=dict(showticklabels=False, showgrid=False, zeroline=False),
+        title='Input Color vs Closest ISCC-NBS Color',
+        xaxis=dict(showticklabels=False, showgrid=False, zeroline=False, range=[-0.5, 1.5]),
+        yaxis=dict(showticklabels=False, showgrid=False, zeroline=False, range=[0.5, 1.5]),
         template='plotly_dark',
-        margin=dict(l=50, r=50, t=80, b=50)
+        margin=dict(l=50, r=50, t=80, b=50),
+        showlegend=False
     )
+    
     fig.add_annotation(
-        x=0, y=1.05, text='Input Color', showarrow=False,
+        x=0, y=1.55, text='Input Color', showarrow=False,
         font=dict(size=14, color='white'), xanchor='center'
     )
     fig.add_annotation(
-        x=1, y=1.05, text=f'Closest: {closest_color_name}', showarrow=False,
+        x=1, y=1.55, text=f'Closest: {closest_color_name}', showarrow=False,
         font=dict(size=14, color='white'), xanchor='center'
     )
     debug_log("Color comparison plot created successfully.")
@@ -260,8 +275,8 @@ def create_lab_comparison_bar(input_lab: List[float], closest_lab: List[float],
         'Type': ['Input LAB'] * 3 + [f'Closest LAB: {closest_color_name}'] * 3
     })
     color_map = {
-        'Input LAB': f'rgb{input_rgb}',
-        f'Closest LAB: {closest_color_name}': f'rgb{closest_rgb}'
+        'Input LAB': f'rgb({input_rgb[0]}, {input_rgb[1]}, {input_rgb[2]})',
+        f'Closest LAB: {closest_color_name}': f'rgb({closest_rgb[0]}, {closest_rgb[1]}, {closest_rgb[2]})'
     }
     fig = px.bar(
         data_frame=data,
@@ -306,8 +321,8 @@ def create_3d_lab_plot(input_lab: List[float], closest_lab: List[float],
         hoverinfo='text',
         text=dataset_df['Color Name']
     )
-    input_rgb_str = f'rgb{input_rgb}'
-    closest_rgb_str = f'rgb{closest_rgb}'
+    input_rgb_str = f'rgb({input_rgb[0]}, {input_rgb[1]}, {input_rgb[2]})'
+    closest_rgb_str = f'rgb({closest_rgb[0]}, {closest_rgb[1]}, {closest_rgb[2]})'
     input_point = go.Scatter3d(
         x=[input_lab[0]],
         y=[input_lab[1]],
@@ -400,7 +415,7 @@ def create_pairwise_scatter_matrix(dataset_df: pd.DataFrame, input_lab: List[flo
     def map_color(color_name: str, lab_values: List[float]) -> str:
         key = tuple(lab_values)
         if key not in cache_rgb:
-            cache_rgb[key] = f'rgb{lab_to_rgb(lab_values)}'
+            cache_rgb[key] = f'rgb({lab_to_rgb(lab_values)[0]}, {lab_to_rgb(lab_values)[1]}, {lab_to_rgb(lab_values)[2]})'
         return cache_rgb[key]
     splom_df['Color Group'] = splom_df.apply(lambda row: map_color(row['Color Name'], [row['L'], row['A'], row['B']]), axis=1)
     splom_trace = go.Splom(
@@ -428,10 +443,14 @@ def create_pairwise_scatter_matrix(dataset_df: pd.DataFrame, input_lab: List[flo
 def display_results_table(results: dict) -> None:
     debug_log("Displaying results table.")
     df = pd.DataFrame([results])
+    
     def color_rgb(cell: str) -> str:
         return f'<div style="background-color:{cell}; width:100px; height:20px;"></div>'
-    df['Input RGB'] = df['Input RGB'].apply(lambda x: color_rgb(f'rgb{x[0]}, {x[1]}, {x[2]}'))
-    df['Closest RGB'] = df['Closest RGB'].apply(lambda x: color_rgb(f'rgb{x[0]}, {x[1]}, {x[2]}'))
+    
+    # Use proper CSS RGB formatting: rgb(...)
+    df['Input RGB'] = df['Input RGB'].apply(lambda x: color_rgb(f'rgb({x[0]}, {x[1]}, {x[2]})'))
+    df['Closest RGB'] = df['Closest RGB'].apply(lambda x: color_rgb(f'rgb({x[0]}, {x[1]}, {x[2]})'))
+    
     st.markdown(df.to_html(escape=False, index=False), unsafe_allow_html=True)
     debug_log("Results table displayed.")
 
@@ -559,7 +578,7 @@ def main() -> None:
                     )
                     # If an RDF file was uploaded, update the sunburst chart to mirror the computed color
                     if df_alternatives is not None and not df_alternatives.empty:
-                        fig_sunburst = create_alternative_terms_sunburst(df_alternatives, base_color=f"rgb{closest_rgb}")
+                        fig_sunburst = create_alternative_terms_sunburst(df_alternatives, base_color=f"rgb({closest_rgb[0]}, {closest_rgb[1]}, {closest_rgb[2]})")
                         st.plotly_chart(fig_sunburst, use_container_width=True)
                     tabs = st.tabs([
                         "Color Comparison", "LAB Comparison", "3D LAB Plot", "Delta-E Histogram", "Color Density", "Pairwise Scatter"
