@@ -152,11 +152,14 @@ def extract_alternative_terms_rdf(rdf_file: Any) -> pd.DataFrame:
     df = pd.DataFrame(rows).drop_duplicates()
     return df
 
-def create_alternative_terms_sunburst(df: pd.DataFrame) -> go.Figure:
+def create_alternative_terms_sunburst(df: pd.DataFrame, base_color: str = None) -> go.Figure:
     """
     Create a sunburst chart for the alternative terms.
     The hierarchy is: Root (main term) -> Language -> Alternative Term.
     The main term is determined as the first English label if available.
+    
+    If a base_color is provided (e.g., "rgb(255,0,0)"), the chart will use that color
+    for all segments, mirroring the described color.
     """
     if df.empty:
         return go.Figure()
@@ -183,14 +186,25 @@ def create_alternative_terms_sunburst(df: pd.DataFrame) -> go.Figure:
     alt_df = alt_df.rename(columns={"Term": "name"})
     # Combine all rows into one DataFrame
     sunburst_df = pd.concat([root_df, lang_df, alt_df[["id", "parent", "name"]]], ignore_index=True)
-    # Use ids as well to force a proper hierarchy
-    fig = px.sunburst(
-        sunburst_df,
-        ids="id",
-        names="name",
-        parents="parent",
-        title="Alternative Terms Sunburst Chart"
-    )
+    # Create the sunburst chart with optional base_color
+    if base_color:
+        fig = px.sunburst(
+            sunburst_df,
+            ids="id",
+            names="name",
+            parents="parent",
+            title="Alternative Terms Sunburst Chart",
+            color="id",  # dummy assignment to trigger discrete mapping
+            color_discrete_sequence=[base_color]
+        )
+    else:
+        fig = px.sunburst(
+            sunburst_df,
+            ids="id",
+            names="name",
+            parents="parent",
+            title="Alternative Terms Sunburst Chart"
+        )
     return fig
 
 # =============================================================================
@@ -498,7 +512,8 @@ def main() -> None:
                 st.markdown("### **Alternative Color Terms from RDF:**")
                 st.dataframe(df_alternatives)
                 # Display a sunburst chart visualization
-                fig_sunburst = create_alternative_terms_sunburst(df_alternatives)
+                # Pass in a base_color if desired, e.g., "rgb(255, 99, 71)"
+                fig_sunburst = create_alternative_terms_sunburst(df_alternatives, base_color="rgb(255, 99, 71)")
                 st.plotly_chart(fig_sunburst, use_container_width=True)
             else:
                 st.warning("No alternative terms found in the RDF.")
