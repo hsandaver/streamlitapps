@@ -195,7 +195,8 @@ def create_alternative_terms_sunburst(df: pd.DataFrame, base_color: str = None) 
             parents="parent",
             title="Alternative Terms Sunburst Chart",
             color="id",  # dummy assignment to trigger discrete mapping
-            color_discrete_sequence=[base_color]
+            color_discrete_sequence=[base_color],
+            template="plotly_white"
         )
     else:
         fig = px.sunburst(
@@ -203,12 +204,13 @@ def create_alternative_terms_sunburst(df: pd.DataFrame, base_color: str = None) 
             ids="id",
             names="name",
             parents="parent",
-            title="Alternative Terms Sunburst Chart"
+            title="Alternative Terms Sunburst Chart",
+            template="plotly_white"
         )
     return fig
 
 # =============================================================================
-# Other Visualization Functions (unchanged except for swatches)
+# Other Visualization Functions (updated for light mode)
 # =============================================================================
 def create_color_comparison_plot(input_rgb: Tuple[int, int, int], closest_rgb: Tuple[int, int, int],
                                  input_lab: List[float], closest_lab: List[float],
@@ -248,18 +250,18 @@ def create_color_comparison_plot(input_rgb: Tuple[int, int, int], closest_rgb: T
         title='Input Color vs Closest ISCC-NBS Color',
         xaxis=dict(showticklabels=False, showgrid=False, zeroline=False, range=[-0.5, 1.5]),
         yaxis=dict(showticklabels=False, showgrid=False, zeroline=False, range=[0.5, 1.5]),
-        template='plotly_dark',
+        template='plotly_white',
         margin=dict(l=50, r=50, t=80, b=50),
         showlegend=False
     )
     
     fig.add_annotation(
         x=0, y=1.55, text='Input Color', showarrow=False,
-        font=dict(size=14, color='white'), xanchor='center'
+        font=dict(size=14, color='black'), xanchor='center'
     )
     fig.add_annotation(
         x=1, y=1.55, text=f'Closest: {closest_color_name}', showarrow=False,
-        font=dict(size=14, color='white'), xanchor='center'
+        font=dict(size=14, color='black'), xanchor='center'
     )
     debug_log("Color comparison plot created successfully.")
     return fig
@@ -286,7 +288,7 @@ def create_lab_comparison_bar(input_lab: List[float], closest_lab: List[float],
         barmode='group',
         hover_data=['Value'],
         title='LAB Value Comparison',
-        template='plotly_dark',
+        template='plotly_white',
         color_discrete_map=color_map
     )
     for i, component in enumerate(components):
@@ -296,7 +298,7 @@ def create_lab_comparison_bar(input_lab: List[float], closest_lab: List[float],
             y=max(input_lab[i], closest_lab[i]) + 5,
             text=f'Delta: {delta:.2f}',
             showarrow=False,
-            font=dict(size=12, color='white')
+            font=dict(size=12, color='black')
         )
     fig.update_layout(
         xaxis_title='LAB Components',
@@ -352,14 +354,14 @@ def create_3d_lab_plot(input_lab: List[float], closest_lab: List[float],
             xaxis_title='L',
             yaxis_title='A',
             zaxis_title='B',
-            xaxis=dict(range=[0, 100], backgroundcolor='rgb(20, 20, 20)'),
-            yaxis=dict(range=[-128, 127], backgroundcolor='rgb(20, 20, 20)'),
-            zaxis=dict(range=[-128, 127], backgroundcolor='rgb(20, 20, 20)'),
-            bgcolor='rgb(20, 20, 20)',
+            xaxis=dict(range=[0, 100], backgroundcolor='white'),
+            yaxis=dict(range=[-128, 127], backgroundcolor='white'),
+            zaxis=dict(range=[-128, 127], backgroundcolor='white'),
+            bgcolor='white',
             camera=dict(eye=dict(x=1.5, y=1.5, z=1.5))
         ),
-        legend=dict(x=0.7, y=0.9, bgcolor='rgba(0,0,0,0)', bordercolor='rgba(0,0,0,0)'),
-        template='plotly_dark',
+        legend=dict(x=0.7, y=0.9, bgcolor='rgba(255,255,255,1)', bordercolor='rgba(0,0,0,0)'),
+        template='plotly_white',
         margin=dict(l=0, r=0, t=80, b=0)
     )
     debug_log("3D LAB color space plot created successfully.")
@@ -372,7 +374,7 @@ def create_delta_e_histogram(delta_e_values: np.ndarray) -> go.Figure:
         nbins=30,
         title='Delta-E Distribution',
         labels={'x': 'Delta-E Value', 'y': 'Count'},
-        template='plotly_dark',
+        template='plotly_white',
         opacity=0.75
     )
     fig.update_layout(
@@ -394,7 +396,7 @@ def create_color_density_heatmap(dataset_df: pd.DataFrame) -> go.Figure:
         title='Color Density Heatmap in A-B Plane',
         labels={'A': 'A Component', 'B': 'B Component'},
         color_continuous_scale='Viridis',
-        template='plotly_dark'
+        template='plotly_white'
     )
     fig.update_layout(
         xaxis_title='A',
@@ -433,7 +435,7 @@ def create_pairwise_scatter_matrix(dataset_df: pd.DataFrame, input_lab: List[flo
     fig_splom = go.Figure(data=[splom_trace])
     fig_splom.update_layout(
         title='Pairwise LAB Relationships',
-        template='plotly_dark',
+        template='plotly_white',
         dragmode='select',
         height=800
     )
@@ -481,6 +483,19 @@ def load_dataset(uploaded_file: Any) -> pd.DataFrame:
 # =============================================================================
 def main() -> None:
     st.set_page_config(page_title="Enhanced LAB Color Analyzer", layout="wide", page_icon="🎨")
+    # Inject CSS to enforce light mode
+    st.markdown(
+        """
+        <style>
+        body {
+            background-color: white;
+            color: black;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+    
     st.title("Enhanced LAB Color Analyzer")
     st.markdown(
         """
