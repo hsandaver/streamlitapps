@@ -1,275 +1,339 @@
+"""
+color_analyzer.py
+
+An enhanced and modularized Streamlit-based LAB Color Analyzer.
+This module provides a ColorAnalyzer class that encapsulates dataset loading,
+RDF processing, color matching, visualization generation, and results display.
+
+Author: Mochi the Code Catgirl (nyah~)
+Refactored by: Your Friendly Research Assistant
+"""
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 import logging
-import networkx as nx  # For potential network visualizations
-from rdflib import Graph, URIRef, Namespace, Literal
 import re
+from rdflib import Graph, URIRef, Namespace, Literal
+from rdflib.namespace import RDF
 from colormath.color_objects import LabColor, sRGBColor
 from colormath.color_conversions import convert_color
 from colormath.color_diff import delta_e_cie2000
-from typing import Union, List, Tuple, Optional, Any
-from io import StringIO
+from typing import Union, List, Tuple, Optional, Any, IO
 
-# Monkey-patch numpy.asscalar if needed
+# =============================================================================
+# Custom Exceptions
+# =============================================================================
+
+class InputError(Exception):
+    """Exception raised for errors in the input LAB color."""
+    pass
+
+class DatasetError(Exception):
+    """Exception raised for errors in the dataset file."""
+    pass
+
+class RDFParsingError(Exception):
+    """Exception raised for errors during RDF file parsing."""
+    pass
+
+class ConversionError(Exception):
+    """Exception raised for errors in color conversions."""
+    pass
+
+# =============================================================================
+# Setup and Configuration
+# =============================================================================
+
+logging.basicConfig(
+    filename='color_analyzer.log',
+    filemode='a',
+    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
+    level=logging.DEBUG
+)
+logger = logging.getLogger(__name__)
+
+# Compatibility for older NumPy versions
 if not hasattr(np, 'asscalar'):
     np.asscalar = lambda a: a.item() if isinstance(a, np.ndarray) else a
 
-# =============================================================================
-# Debugging & Logging Setup
-# =============================================================================
-logging.basicConfig(
-    filename='debug.log',
-    filemode='a',
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    level=logging.DEBUG
-)
-
-def debug_log(message: str) -> None:
-    logging.debug(message)
+REQUIRED_COLUMNS = {'L', 'A', 'B', 'Color Name'}
 
 # =============================================================================
-# LAB Color Analysis Functions
+# Utility Functions (Validation, Conversion, Logging)
 # =============================================================================
+
+def _log_and_report(message: str, level: str = 'debug', error_type: Optional[str] = None) -> None:
+    """Logs and reports messages to both the log file and Streamlit UI."""
+    if level == 'debug':
+        logger.debug(message)
+    elif level == 'info':
+        logger.info(message)
+        st.info(message)
+    elif level == 'warning':
+        logger.warning(message)
+        st.warning(message)
+    elif level == 'error':
+        logger.error(message)
+        st.error(f"{error_type}: {message}" if error_type else message)
+
 def validate_lab_color(lab: Union[List[float], Tuple[float, float, float], np.ndarray]) -> bool:
-    debug_log(f"Validating LAB color: {lab}")
+    """
+    Validates that the LAB color input is a 3-element list/tuple/array with numerical values 
+    within the proper ranges.
+    """
     if not isinstance(lab, (list, tuple, np.ndarray)) or len(lab) != 3:
-        st.error("Input LAB color must be a list, tuple, or array of three numerical values.")
-        debug_log("Validation failed: Incorrect type or length")
+        _log_and_report("Input LAB color must be a list, tuple, or array of three numerical values.", 'error', 'Input Error')
         return False
     try:
-        L, A, B = float(lab[0]), float(lab[1]), float(lab[2])
+        L, A, B = map(float, lab)
     except (ValueError, TypeError) as e:
-        st.error("LAB components must be numerical values.")
-        debug_log(f"Validation failed: LAB conversion error - {e}")
+        _log_and_report(f"LAB components must be numerical values. {e}", 'error', 'Input Error')
         return False
-    if not (0 <= L <= 100):
-        st.error("L component must be between 0 and 100.")
-        debug_log("Validation failed: L component out of range")
+    if not (0 <= L <= 100 and -128 <= A <= 127 and -128 <= B <= 127):
+        _log_and_report("LAB components are out of range. L: 0-100, A & B: -128 to 127.", 'error', 'Input Error')
         return False
-    if not (-128 <= A <= 127):
-        st.error("A component must be between -128 and 127.")
-        debug_log("Validation failed: A component out of range")
-        return False
-    if not (-128 <= B <= 127):
-        st.error("B component must be between -128 and 127.")
-        debug_log("Validation failed: B component out of range")
-        return False
-    debug_log("LAB color validation passed")
     return True
 
 @st.cache_data(show_spinner=False)
 def lab_to_rgb(lab_color: Union[List[float], Tuple[float, float, float], np.ndarray]) -> Tuple[int, int, int]:
-    debug_log(f"Converting LAB to RGB for: {lab_color}")
+    """
+    Converts a LAB color to RGB using colormath.
+    Returns an RGB tuple with values between 0 and 255.
+    """
     try:
         lab = LabColor(lab_l=lab_color[0], lab_a=lab_color[1], lab_b=lab_color[2])
         rgb = convert_color(lab, sRGBColor, target_illuminant='d65')
-        rgb_clamped = (
-            int(max(0, min(rgb.rgb_r, 1)) * 255),
-            int(max(0, min(rgb.rgb_g, 1)) * 255),
-            int(max(0, min(rgb.rgb_b, 1)) * 255)
-        )
-        debug_log(f"Converted LAB {lab_color} to RGB {rgb_clamped}")
-        return rgb_clamped
+        # Clip the values between 0 and 1, then scale to 255
+        return tuple(int(max(0, min(1, c)) * 255) for c in [rgb.rgb_r, rgb.rgb_g, rgb.rgb_b])
     except Exception as e:
-        st.error(f"Error converting LAB to RGB: {e}")
-        debug_log(f"Error converting LAB to RGB for {lab_color}: {e}")
+        _log_and_report(f"Error converting LAB to RGB: {e}", 'error', 'Conversion Error')
         return (0, 0, 0)
 
-def calculate_delta_e_euclidean(input_lab: Union[List[float], Tuple[float, float, float]], 
-                                dataset_df: pd.DataFrame) -> np.ndarray:
-    debug_log("Calculating Euclidean Delta-E (ΔE*76).")
+def format_rgb(rgb: Tuple[int, int, int]) -> str:
+    """Formats an RGB tuple into a Plotly-friendly RGB string."""
+    return f"rgb({rgb[0]},{rgb[1]},{rgb[2]})"
+
+def calculate_delta_e(input_lab: Union[List[float], Tuple[float, float, float]],
+                      dataset_df: pd.DataFrame,
+                      method: str = 'euclidean') -> np.ndarray:
+    """
+    Calculates the Delta-E values between an input LAB color and all colors in the dataset.
+    Supports Euclidean (ΔE76) and CIEDE2000 methods.
+    """
     input_lab_arr = np.array(input_lab)
-    delta_e = np.linalg.norm(dataset_df[['L', 'A', 'B']].values - input_lab_arr, axis=1)
-    debug_log("Euclidean Delta-E calculation complete.")
-    return delta_e
+    if method.lower() == 'ciede2000':
+        input_lab_obj = LabColor(*input_lab_arr)
+        # Using list comprehension for clarity and potential speed-up
+        delta_e_values = np.array([
+            delta_e_cie2000(input_lab_obj, LabColor(*row))
+            for row in dataset_df[['L', 'A', 'B']].values
+        ])
+    else:
+        delta_e_values = np.linalg.norm(dataset_df[['L', 'A', 'B']].values - input_lab_arr, axis=1)
+    return delta_e_values
 
-def calculate_delta_e_ciede2000(input_lab: Union[List[float], Tuple[float, float, float]], 
-                                dataset_df: pd.DataFrame) -> np.ndarray:
-    debug_log("Calculating CIEDE2000 Delta-E.")
-    input_lab_obj = LabColor(lab_l=input_lab[0], lab_a=input_lab[1], lab_b=input_lab[2])
-    delta_e_list = []
-    for idx, row in dataset_df.iterrows():
-        lab_obj = LabColor(lab_l=row['L'], lab_a=row['A'], lab_b=row['B'])
-        delta_e = delta_e_cie2000(input_lab_obj, lab_obj)
-        delta_e_list.append(delta_e)
-    debug_log("CIEDE2000 Delta-E calculation complete.")
-    return np.array(delta_e_list)
-
-def find_closest_color(input_lab: Union[List[float], Tuple[float, float, float]], 
+def find_closest_color(input_lab: Union[List[float], Tuple[float, float, float]],
                        dataset_df: pd.DataFrame,
-                       delta_e_func=calculate_delta_e_euclidean) -> Tuple[Optional[pd.Series], Optional[float]]:
-    debug_log(f"Finding closest color for input LAB: {input_lab}")
-    delta_e_values = delta_e_func(input_lab, dataset_df)
+                       delta_e_method: str = 'euclidean') -> Tuple[Optional[pd.Series], Optional[float]]:
+    """
+    Finds the closest color from the dataset to the input LAB color based on Delta-E.
+    Returns the closest color row and its Delta-E value.
+    """
+    delta_e_values = calculate_delta_e(input_lab, dataset_df, method=delta_e_method)
     if np.all(np.isnan(delta_e_values)):
-        st.error("Delta-E calculation resulted in all NaN values. Check your dataset and input LAB values.")
-        debug_log("All Delta-E values are NaN.")
+        _log_and_report("Delta-E calculation resulted in all NaN values. Check dataset and input.", 'error')
         return None, None
     min_idx = np.nanargmin(delta_e_values)
     min_delta_e = delta_e_values[min_idx]
     closest_color = dataset_df.iloc[min_idx]
-    debug_log(f"Closest color found: {closest_color['Color Name']} with Delta-E: {min_delta_e}")
     return closest_color, min_delta_e
 
-# =============================================================================
-# RDF Alternative Terms Extraction Functions
-# =============================================================================
-def extract_alternative_terms_rdf(rdf_file: Any) -> pd.DataFrame:
+@st.cache_data(show_spinner=True)
+def load_dataset(uploaded_file: IO[Any]) -> pd.DataFrame:
     """
-    Parse an uploaded RDF (XML) file using rdflib and extract alternative color terms.
-    It looks for rdfs:label and skos:altLabel for the subject URI 
-    http://vocab.getty.edu/aat/300128563 and also scans Activity description elements.
-    Returns a DataFrame with the term and language.
+    Loads and validates the CSV dataset containing LAB values and color names.
+    Ensures all required columns are present and non-null.
+    """
+    try:
+        dataset_df = pd.read_csv(uploaded_file)
+    except Exception as e:
+        _log_and_report(f"Error reading CSV file: {e}", 'error', 'File Reading Error')
+        raise DatasetError("Failed to load dataset.")
+    if not REQUIRED_COLUMNS.issubset(dataset_df.columns):
+        missing_cols = REQUIRED_COLUMNS - set(dataset_df.columns)
+        _log_and_report(f"CSV is missing required columns: {missing_cols}", 'error', 'Dataset Error')
+        raise DatasetError("Dataset missing required columns.")
+    if dataset_df[list(REQUIRED_COLUMNS)].isnull().any().any():
+        _log_and_report("CSV contains missing values in required columns.", 'error', 'Dataset Error')
+        raise DatasetError("Dataset contains missing values.")
+    return dataset_df
+
+@st.cache_data(show_spinner=True)
+def extract_alternative_terms_rdf(rdf_file: IO[Any]) -> pd.DataFrame:
+    """
+    Extracts alternative color terms from an RDF/XML file.
+    Filters rdfs:label, skos:altLabel, and dc:description while applying digit filters.
+    Processes all subjects of type skos:Concept.
     """
     g = Graph()
-    g.parse(file=rdf_file, format="xml")
+    try:
+        g.parse(file=rdf_file, format="xml")
+    except Exception as e:
+        _log_and_report(f"Failed to parse RDF file: {e}", 'error', 'RDF Parsing Error')
+        raise RDFParsingError("Failed to parse RDF file.")
     
     RDFS = Namespace("http://www.w3.org/2000/01/rdf-schema#")
     SKOS = Namespace("http://www.w3.org/2004/02/skos/core#")
+    DC_ELEM = URIRef("http://purl.org/dc/elements/1.1/description")
     
-    subject_uri = URIRef("http://vocab.getty.edu/aat/300128563")
+    subjects = list(g.subjects(predicate=RDF.type, object=URIRef("http://www.w3.org/2004/02/skos/core#Concept")))
+    if not subjects:
+        _log_and_report("No subjects with skos:Concept type found in RDF file.", "warning")
+        return pd.DataFrame()
     
     rows = []
-    # Extract direct labels (rdfs:label)
-    for label in g.objects(subject=subject_uri, predicate=RDFS.label):
-        if isinstance(label, Literal):
-            rows.append({"Term": str(label), "Language": label.language})
-    # Extract alternative labels (skos:altLabel)
-    for alt in g.objects(subject=subject_uri, predicate=SKOS.altLabel):
-        if isinstance(alt, Literal):
-            rows.append({"Term": str(alt), "Language": alt.language})
+    def add_term(term: Literal, skip_digit_filter: bool = False) -> None:
+        if isinstance(term, Literal):
+            term_text = str(term).strip()
+            if not skip_digit_filter:
+                if "centroid" in term_text.lower():
+                    rows.append({"Term": term_text, "Language": term.language or "unknown"})
+                    return
+                if re.search(r'\d', term_text) or len(term_text) > 50:
+                    return
+            else:
+                if len(term_text) > 100:
+                    return
+            rows.append({"Term": term_text, "Language": term.language or "unknown"})
     
-    # Additionally, scan for any Activity description elements that might include alternative terms.
-    for s, p, o in g.triples((None, None, None)):
-        if p.endswith("description") and isinstance(o, Literal):
-            m = re.search(r'([A-Za-z\s,-]+)\s*\(\d+\)', str(o))
-            if m:
-                term_extracted = m.group(1).strip()
-                rows.append({"Term": term_extracted, "Language": "unknown"})
+    # Process each subject
+    for subj in subjects:
+        for label in g.objects(subject=subj, predicate=RDFS.label):
+            add_term(label, skip_digit_filter=False)
+        for alt in g.objects(subject=subj, predicate=SKOS.altLabel):
+            add_term(alt, skip_digit_filter=False)
     
-    df = pd.DataFrame(rows).drop_duplicates()
-    return df
+    # Process DC description terms (not tied to a specific subject)
+    for desc in g.objects(predicate=DC_ELEM):
+        add_term(desc, skip_digit_filter=True)
+    
+    return pd.DataFrame(rows).drop_duplicates()
 
-def create_alternative_terms_sunburst(df: pd.DataFrame, base_color: str = None) -> go.Figure:
+# =============================================================================
+# Visualization Functions
+# =============================================================================
+
+def truncate_label(label: str, max_length: int = 20) -> str:
+    """Truncates a label to a maximum length."""
+    return label if len(label) <= max_length else label[:max_length] + "..."
+
+def create_alternative_terms_sunburst(df: pd.DataFrame, base_color: Optional[str] = None,
+                                        trunc_length: int = 20) -> go.Figure:
     """
-    Create a sunburst chart for the alternative terms.
-    The hierarchy is: Root (main term) -> Language -> Alternative Term.
-    The main term is determined as the first English label if available.
-    
-    If a base_color is provided (e.g., "rgb(128, 130, 100)"), the chart will use that color
-    for all segments, mirroring the described color.
+    Generates a sunburst chart from the alternative color terms DataFrame.
+    Truncates overly long labels for display while showing the full text in the hover tooltip.
     """
     if df.empty:
         return go.Figure()
-    # Determine the main term (prefer English)
-    df_en = df[df["Language"]=="en"]
-    if not df_en.empty:
-        main_term = df_en.iloc[0]["Term"]
-    else:
-        main_term = df.iloc[0]["Term"]
-    # Filter out rows that exactly match the main term
+    
+    # Choose the main term: prefer English labels if available.
+    english_terms = df[df["Language"] == "en"]
+    main_term = english_terms["Term"].iloc[0] if not english_terms.empty else df["Term"].iloc[0]
+    
     df_alt = df[df["Term"] != main_term].copy()
-    # Build a hierarchy DataFrame
-    # Root node:
-    root_df = pd.DataFrame([{"id": "root", "parent": "", "name": main_term}])
-    # Language groups:
-    lang_df = []
+    data = [{'id': 'root', 'parent': '', 'name': main_term}]
+    
+    # Create a branch for each language.
     for lang in df_alt["Language"].unique():
-        lang_df.append({"id": f"lang_{lang}", "parent": "root", "name": lang})
-    lang_df = pd.DataFrame(lang_df)
-    # Alternative terms:
-    alt_df = df_alt.copy()
-    alt_df["id"] = alt_df.index.astype(str)
-    alt_df["parent"] = alt_df["Language"].apply(lambda x: f"lang_{x}")
-    alt_df = alt_df.rename(columns={"Term": "name"})
-    # Combine all rows into one DataFrame
-    sunburst_df = pd.concat([root_df, lang_df, alt_df[["id", "parent", "name"]]], ignore_index=True)
-    # Create the sunburst chart with optional base_color
-    if base_color:
-        fig = px.sunburst(
-            sunburst_df,
-            ids="id",
-            names="name",
-            parents="parent",
-            title="Alternative Terms Sunburst Chart",
-            color="id",  # dummy assignment to trigger discrete mapping
-            color_discrete_sequence=[base_color],
-            template="plotly_white"
-        )
-    else:
-        fig = px.sunburst(
-            sunburst_df,
-            ids="id",
-            names="name",
-            parents="parent",
-            title="Alternative Terms Sunburst Chart",
-            template="plotly_white"
-        )
+        data.append({'id': f'lang_{lang}', 'parent': 'root', 'name': lang})
+    
+    # Add each alternative term.
+    for idx, row in df_alt.iterrows():
+        data.append({'id': str(idx), 'parent': f'lang_{row["Language"]}', 'name': row["Term"]})
+    
+    sunburst_df = pd.DataFrame(data)
+    sunburst_df["full_name"] = sunburst_df["name"]
+    sunburst_df["name"] = sunburst_df["name"].apply(lambda x: truncate_label(x, trunc_length))
+    
+    fig = px.sunburst(
+        sunburst_df,
+        ids="id",
+        names="name",
+        parents="parent",
+        custom_data=["full_name"],
+        title="Alternative Terms Sunburst Chart",
+        template="plotly_white",
+        color="id" if not base_color else None,
+        color_discrete_sequence=[base_color] if base_color else None,
+    )
+    fig.update_traces(
+        textfont=dict(size=18),
+        insidetextorientation='radial',
+        hovertemplate='<b>%{customdata[0]}</b><extra></extra>'
+    )
+    fig.update_layout(
+        title_font=dict(size=24),
+        margin=dict(l=50, r=50, t=80, b=50)
+    )
     return fig
 
-# =============================================================================
-# Other Visualization Functions (updated for light mode)
-# =============================================================================
 def create_color_comparison_plot(input_rgb: Tuple[int, int, int], closest_rgb: Tuple[int, int, int],
                                  input_lab: List[float], closest_lab: List[float],
                                  closest_color_name: str, delta_e: float) -> go.Figure:
-    debug_log("Creating color comparison plot.")
-    fig = go.Figure()
-    
-    # Input Color Swatch
-    fig.add_trace(go.Scatter(
-        x=[0],
-        y=[1],
-        mode='markers',
-        marker=dict(
-            size=50,
-            color=f'rgb({input_rgb[0]}, {input_rgb[1]}, {input_rgb[2]})',
-            line=dict(width=2, color='DarkSlateGrey')
+    """
+    Creates a side-by-side scatter plot comparing the input color and the closest matched color.
+    """
+    fig = go.Figure(data=[
+        go.Scatter(
+            x=[0], y=[1],
+            mode='markers',
+            marker=dict(
+                size=50,
+                color=format_rgb(input_rgb),
+                line=dict(width=2, color='DarkSlateGrey')
+            ),
+            name='Input Color',
+            hovertemplate=(f"Input LAB: L={input_lab[0]:.2f}, A={input_lab[1]:.2f}, B={input_lab[2]:.2f}"
+                           f"<br>Delta-E: {delta_e:.2f}<extra></extra>")
         ),
-        name='Input Color',
-        hovertemplate=f"Input LAB: L={input_lab[0]}, A={input_lab[1]}, B={input_lab[2]}<br>Delta-E: {delta_e:.2f}<extra></extra>"
-    ))
-    
-    # Closest Color Swatch
-    fig.add_trace(go.Scatter(
-        x=[1],
-        y=[1],
-        mode='markers',
-        marker=dict(
-            size=50,
-            color=f'rgb({closest_rgb[0]}, {closest_rgb[1]}, {closest_rgb[2]})',
-            line=dict(width=2, color='DarkSlateGrey')
-        ),
-        name=f'Closest: {closest_color_name}',
-        hovertemplate=f"Closest LAB: L={closest_lab[0]}, A={closest_lab[1]}, B={closest_lab[2]}<extra></extra>"
-    ))
-    
+        go.Scatter(
+            x=[1], y=[1],
+            mode='markers',
+            marker=dict(
+                size=50,
+                color=format_rgb(closest_rgb),
+                line=dict(width=2, color='DarkSlateGrey')
+            ),
+            name=f'Closest: {closest_color_name}',
+            hovertemplate=(f"Closest LAB: L={closest_lab[0]:.2f}, A={closest_lab[1]:.2f}, B={closest_lab[2]:.2f}"
+                           f"<extra></extra>")
+        )
+    ])
     fig.update_layout(
         title='Input Color vs Closest ISCC-NBS Color',
         xaxis=dict(showticklabels=False, showgrid=False, zeroline=False, range=[-0.5, 1.5]),
         yaxis=dict(showticklabels=False, showgrid=False, zeroline=False, range=[0.5, 1.5]),
         template='plotly_white',
         margin=dict(l=50, r=50, t=80, b=50),
-        showlegend=False
+        showlegend=False,
+        annotations=[
+            dict(x=0, y=1.55, text='Input Color', showarrow=False,
+                 font=dict(size=14, color='black'), xanchor='center'),
+            dict(x=1, y=1.55, text=f'Closest: {closest_color_name}', showarrow=False,
+                 font=dict(size=14, color='black'), xanchor='center')
+        ]
     )
-    
-    fig.add_annotation(
-        x=0, y=1.55, text='Input Color', showarrow=False,
-        font=dict(size=14, color='black'), xanchor='center'
-    )
-    fig.add_annotation(
-        x=1, y=1.55, text=f'Closest: {closest_color_name}', showarrow=False,
-        font=dict(size=14, color='black'), xanchor='center'
-    )
-    debug_log("Color comparison plot created successfully.")
     return fig
 
 def create_lab_comparison_bar(input_lab: List[float], closest_lab: List[float],
                               closest_color_name: str, input_rgb: Tuple[int, int, int],
                               closest_rgb: Tuple[int, int, int]) -> go.Figure:
-    debug_log("Creating LAB comparison bar plot.")
+    """
+    Creates a bar chart comparing the LAB components of the input color and the closest matched color.
+    """
     components = ['L', 'A', 'B']
     data = pd.DataFrame({
         'Component': components * 2,
@@ -277,8 +341,8 @@ def create_lab_comparison_bar(input_lab: List[float], closest_lab: List[float],
         'Type': ['Input LAB'] * 3 + [f'Closest LAB: {closest_color_name}'] * 3
     })
     color_map = {
-        'Input LAB': f'rgb({input_rgb[0]}, {input_rgb[1]}, {input_rgb[2]})',
-        f'Closest LAB: {closest_color_name}': f'rgb({closest_rgb[0]}, {closest_rgb[1]}, {closest_rgb[2]})'
+        'Input LAB': format_rgb(input_rgb),
+        f'Closest LAB: {closest_color_name}': format_rgb(closest_rgb)
     }
     fig = px.bar(
         data_frame=data,
@@ -306,42 +370,36 @@ def create_lab_comparison_bar(input_lab: List[float], closest_lab: List[float],
         legend_title='Color Type',
         margin=dict(l=50, r=50, t=80, b=50)
     )
-    debug_log("LAB comparison bar plot created successfully.")
     return fig
 
 def create_3d_lab_plot(input_lab: List[float], closest_lab: List[float],
                        closest_color_name: str, dataset_df: pd.DataFrame,
                        input_rgb: Tuple[int, int, int], closest_rgb: Tuple[int, int, int]) -> go.Figure:
-    debug_log("Creating 3D LAB color space plot.")
+    """
+    Generates a 3D scatter plot of the LAB color space, marking the dataset colors,
+    the input color, and the closest color.
+    """
     dataset_points = go.Scatter3d(
-        x=dataset_df['L'],
-        y=dataset_df['A'],
-        z=dataset_df['B'],
+        x=dataset_df['L'], y=dataset_df['A'], z=dataset_df['B'],
         mode='markers',
         marker=dict(size=3, color='lightgrey', opacity=0.5),
         name='Dataset Colors',
         hoverinfo='text',
         text=dataset_df['Color Name']
     )
-    input_rgb_str = f'rgb({input_rgb[0]}, {input_rgb[1]}, {input_rgb[2]})'
-    closest_rgb_str = f'rgb({closest_rgb[0]}, {closest_rgb[1]}, {closest_rgb[2]})'
     input_point = go.Scatter3d(
-        x=[input_lab[0]],
-        y=[input_lab[1]],
-        z=[input_lab[2]],
+        x=[input_lab[0]], y=[input_lab[1]], z=[input_lab[2]],
         mode='markers+text',
-        marker=dict(size=10, color=input_rgb_str, opacity=1),
+        marker=dict(size=10, color=format_rgb(input_rgb), opacity=1),
         text=['Input Color'],
         textposition='top center',
         name='Input Color',
         hoverinfo='text'
     )
     closest_point = go.Scatter3d(
-        x=[closest_lab[0]],
-        y=[closest_lab[1]],
-        z=[closest_lab[2]],
+        x=[closest_lab[0]], y=[closest_lab[1]], z=[closest_lab[2]],
         mode='markers+text',
-        marker=dict(size=10, color=closest_rgb_str, opacity=1),
+        marker=dict(size=10, color=format_rgb(closest_rgb), opacity=1),
         text=[f'Closest: {closest_color_name}'],
         textposition='top center',
         name='Closest Color',
@@ -351,9 +409,7 @@ def create_3d_lab_plot(input_lab: List[float], closest_lab: List[float],
     fig.update_layout(
         title='3D LAB Color Space Visualization',
         scene=dict(
-            xaxis_title='L',
-            yaxis_title='A',
-            zaxis_title='B',
+            xaxis_title='L', yaxis_title='A', zaxis_title='B',
             xaxis=dict(range=[0, 100], backgroundcolor='white'),
             yaxis=dict(range=[-128, 127], backgroundcolor='white'),
             zaxis=dict(range=[-128, 127], backgroundcolor='white'),
@@ -364,11 +420,12 @@ def create_3d_lab_plot(input_lab: List[float], closest_lab: List[float],
         template='plotly_white',
         margin=dict(l=0, r=0, t=80, b=0)
     )
-    debug_log("3D LAB color space plot created successfully.")
     return fig
 
 def create_delta_e_histogram(delta_e_values: np.ndarray) -> go.Figure:
-    debug_log("Creating Delta-E histogram.")
+    """
+    Creates a histogram of Delta-E values across the dataset.
+    """
     fig = px.histogram(
         x=delta_e_values,
         nbins=30,
@@ -382,11 +439,12 @@ def create_delta_e_histogram(delta_e_values: np.ndarray) -> go.Figure:
         yaxis=dict(title='Frequency'),
         margin=dict(l=50, r=50, t=80, b=50)
     )
-    debug_log("Delta-E histogram created successfully.")
     return fig
 
 def create_color_density_heatmap(dataset_df: pd.DataFrame) -> go.Figure:
-    debug_log("Creating color density heatmap.")
+    """
+    Generates a density heatmap in the A-B plane from the dataset LAB values.
+    """
     fig = px.density_heatmap(
         dataset_df,
         x='A',
@@ -403,23 +461,26 @@ def create_color_density_heatmap(dataset_df: pd.DataFrame) -> go.Figure:
         yaxis_title='B',
         margin=dict(l=50, r=50, t=80, b=50)
     )
-    debug_log("Color density heatmap created successfully.")
     return fig
+
+@st.cache_data
+def cached_lab_to_rgb(l: float, a: float, b: float) -> Tuple[int, int, int]:
+    """Cached helper for converting LAB to RGB."""
+    return lab_to_rgb([l, a, b])
 
 def create_pairwise_scatter_matrix(dataset_df: pd.DataFrame, input_lab: List[float],
                                    closest_lab: List[float]) -> go.Figure:
-    debug_log("Creating pairwise scatter matrix.")
+    """
+    Creates a scatter matrix plot showing pairwise relationships of LAB values,
+    including the input and closest color.
+    """
     splom_df = dataset_df.copy()
     input_row = {'L': input_lab[0], 'A': input_lab[1], 'B': input_lab[2], 'Color Name': 'Input Color'}
     closest_row = {'L': closest_lab[0], 'A': closest_lab[1], 'B': closest_lab[2], 'Color Name': 'Closest Color'}
     splom_df = pd.concat([splom_df, pd.DataFrame([input_row, closest_row])], ignore_index=True)
-    cache_rgb = {}
-    def map_color(color_name: str, lab_values: List[float]) -> str:
-        key = tuple(lab_values)
-        if key not in cache_rgb:
-            cache_rgb[key] = f'rgb({lab_to_rgb(lab_values)[0]}, {lab_to_rgb(lab_values)[1]}, {lab_to_rgb(lab_values)[2]})'
-        return cache_rgb[key]
-    splom_df['Color Group'] = splom_df.apply(lambda row: map_color(row['Color Name'], [row['L'], row['A'], row['B']]), axis=1)
+    
+    splom_df['Color Group'] = splom_df.apply(lambda row: format_rgb(cached_lab_to_rgb(row["L"], row["A"], row["B"])), axis=1)
+    
     splom_trace = go.Splom(
         dimensions=[
             dict(label='L', values=splom_df['L']),
@@ -439,206 +500,247 @@ def create_pairwise_scatter_matrix(dataset_df: pd.DataFrame, input_lab: List[flo
         dragmode='select',
         height=800
     )
-    debug_log("Pairwise scatter matrix created successfully.")
     return fig_splom
 
 def display_results_table(results: dict) -> None:
-    debug_log("Displaying results table.")
+    """
+    Displays the results in a formatted HTML table using Streamlit.
+    """
     df = pd.DataFrame([results])
-    
-    def color_rgb(cell: str) -> str:
-        return f'<div style="background-color:{cell}; width:100px; height:20px;"></div>'
-    
-    # Use proper CSS RGB formatting: rgb(...)
-    df['Input RGB'] = df['Input RGB'].apply(lambda x: color_rgb(f'rgb({x[0]}, {x[1]}, {x[2]})'))
-    df['Closest RGB'] = df['Closest RGB'].apply(lambda x: color_rgb(f'rgb({x[0]}, {x[1]}, {x[2]})'))
-    
+    def color_rgb_html(rgb_tuple: Tuple[int, int, int]) -> str:
+        return f'<div style="background-color:{format_rgb(rgb_tuple)}; width:100px; height:20px;"></div>'
+    df['Input RGB'] = df['Input RGB'].apply(color_rgb_html)
+    df['Closest RGB'] = df['Closest RGB'].apply(color_rgb_html)
     st.markdown(df.to_html(escape=False, index=False), unsafe_allow_html=True)
-    debug_log("Results table displayed.")
-
-@st.cache_data(show_spinner=True)
-def load_dataset(uploaded_file: Any) -> pd.DataFrame:
-    debug_log("Loading dataset from uploaded file.")
-    try:
-        dataset_df = pd.read_csv(uploaded_file)
-    except Exception as e:
-        st.error(f"Error reading CSV file: {e}")
-        debug_log(f"Error reading CSV file: {e}")
-        return pd.DataFrame()
-    required_columns = {'L', 'A', 'B', 'Color Name'}
-    if not required_columns.issubset(set(dataset_df.columns)):
-        missing = required_columns - set(dataset_df.columns)
-        st.error(f"CSV file is missing required columns: {missing}")
-        debug_log(f"Dataset validation failed: Missing columns {missing}")
-        return pd.DataFrame()
-    if dataset_df[list(required_columns)].isnull().any().any():
-        st.error("CSV file contains missing values in required columns.")
-        debug_log("Dataset validation failed: Missing values detected.")
-        return pd.DataFrame()
-    debug_log("Dataset loaded and validated successfully.")
-    return dataset_df
 
 # =============================================================================
-# Main Application
+# ColorAnalyzer Class
 # =============================================================================
-def main() -> None:
-    st.set_page_config(page_title="Enhanced LAB Color Analyzer", layout="wide", page_icon="🎨")
-    # Inject CSS to enforce light mode
-    st.markdown(
+
+class ColorAnalyzer:
+    """
+    A class-based implementation of the LAB Color Analyzer.
+    Encapsulates dataset loading, RDF processing, color matching, visualization, and result display.
+    """
+    REQUIRED_COLUMNS = REQUIRED_COLUMNS  # Class variable for configuration
+
+    def __init__(self) -> None:
+        self.dataset_df: Optional[pd.DataFrame] = None
+        self.rdf_alternatives_df: Optional[pd.DataFrame] = None
+        self.input_lab: Optional[List[float]] = None
+        self.delta_e_method: str = 'euclidean'
+        self.closest_color: Optional[pd.Series] = None
+        self.delta_e: Optional[float] = None
+
+    def load_dataset(self, uploaded_file: IO[Any]) -> bool:
+        """Loads and validates the dataset CSV file."""
+        try:
+            self.dataset_df = load_dataset(uploaded_file)
+        except DatasetError:
+            return False
+        return True
+
+    def load_rdf(self, rdf_file: Optional[IO[Any]]) -> None:
+        """Processes the RDF file and stores alternative color terms."""
+        if rdf_file is not None:
+            try:
+                self.rdf_alternatives_df = extract_alternative_terms_rdf(rdf_file)
+            except RDFParsingError:
+                self.rdf_alternatives_df = None
+        else:
+            self.rdf_alternatives_df = None
+
+    def set_input_color(self, lab: List[float]) -> bool:
+        """Validates and sets the input LAB color."""
+        if validate_lab_color(lab):
+            self.input_lab = lab
+            return True
+        return False
+
+    def set_delta_e_method(self, method: str) -> None:
+        """Sets the Delta-E calculation method."""
+        self.delta_e_method = method
+
+    def match_color(self) -> bool:
+        """Finds the closest color from the dataset to the input LAB color."""
+        if self.dataset_df is None or self.input_lab is None:
+            _log_and_report("Dataset or input LAB color not set.", 'error', 'Processing Error')
+            return False
+        self.closest_color, self.delta_e = find_closest_color(self.input_lab, self.dataset_df, delta_e_method=self.delta_e_method)
+        if self.closest_color is None:
+            return False
+        return True
+
+    def generate_visualizations(self) -> dict:
         """
-        <style>
-        body {
-            background-color: white;
-            color: black;
+        Generates and returns a dictionary of Plotly figures for various visualizations.
+        Returns keys: comparison, lab_bar, lab_3d, delta_hist, density_heatmap, scatter_matrix.
+        """
+        if self.dataset_df is None or self.input_lab is None or self.closest_color is None:
+            _log_and_report("Missing data for visualization.", 'error', 'Visualization Error')
+            return {}
+        closest_lab = [self.closest_color['L'], self.closest_color['A'], self.closest_color['B']]
+        input_rgb = lab_to_rgb(self.input_lab)
+        closest_rgb = lab_to_rgb(closest_lab)
+        closest_color_name = self.closest_color['Color Name']
+
+        figs = {
+            "comparison": create_color_comparison_plot(input_rgb, closest_rgb, self.input_lab, closest_lab, closest_color_name, self.delta_e),
+            "lab_bar": create_lab_comparison_bar(self.input_lab, closest_lab, closest_color_name, input_rgb, closest_rgb),
+            "lab_3d": create_3d_lab_plot(self.input_lab, closest_lab, closest_color_name, self.dataset_df, input_rgb, closest_rgb),
+            "delta_hist": create_delta_e_histogram(calculate_delta_e(self.input_lab, self.dataset_df, method=self.delta_e_method)),
+            "density_heatmap": create_color_density_heatmap(self.dataset_df),
+            "scatter_matrix": create_pairwise_scatter_matrix(self.dataset_df, self.input_lab, closest_lab)
         }
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
-    
-    st.title("Enhanced LAB Color Analyzer")
-    st.markdown(
-        """
-        Welcome to the **Enhanced LAB Color Analyzer**!  
-        Upload your **ISCC-NBS LAB colors** dataset and input your **LAB color** values to find the closest matching color with detailed visualizations.  
-        You may also upload an RDF file (in XML format) containing alternative color terms for Getty AAT.
-        """
-    )
-    # Sidebar: Upload Options
+        return figs
+
+    def display_results(self) -> None:
+        """Displays the results table and provides a download button for CSV export."""
+        if self.dataset_df is None or self.input_lab is None or self.closest_color is None:
+            st.error("Missing results data.")
+            return
+        closest_lab = [self.closest_color['L'], self.closest_color['A'], self.closest_color['B']]
+        input_rgb = lab_to_rgb(self.input_lab)
+        closest_rgb = lab_to_rgb(closest_lab)
+        closest_color_name = self.closest_color['Color Name']
+        st.markdown("### **Results:**")
+        st.markdown(
+            f"""
+            | Metric                     | Value                                                        |
+            |----------------------------|--------------------------------------------------------------|
+            | **Input LAB Color**        | L={self.input_lab[0]:.2f}, A={self.input_lab[1]:.2f}, B={self.input_lab[2]:.2f} |
+            | **Closest ISCC-NBS Color** | {closest_color_name}                                         |
+            | **Delta-E Value ({self.delta_e_method.upper()})** | {self.delta_e:.2f}                                                |
+            | **Closest LAB Color**      | L={closest_lab[0]:.2f}, A={closest_lab[1]:.2f}, B={closest_lab[2]:.2f} |
+            | **Input RGB Color**        | <span style="background-color:{format_rgb(input_rgb)}; padding: 5px; border: 1px solid black;">   </span> |
+            | **Closest RGB Color**      | <span style="background-color:{format_rgb(closest_rgb)}; padding: 5px; border: 1px solid black;">   </span> |
+            """,
+            unsafe_allow_html=True
+        )
+        # Display alternative terms if available
+        if self.rdf_alternatives_df is not None and not self.rdf_alternatives_df.empty:
+            st.markdown("### **Alternative Color Terms from RDF:**")
+            st.dataframe(self.rdf_alternatives_df)
+            base_color = format_rgb(closest_rgb)
+            fig_sunburst = create_alternative_terms_sunburst(self.rdf_alternatives_df, base_color=base_color)
+            st.plotly_chart(fig_sunburst, use_container_width=True)
+        results = {
+            'Input LAB': f"L={self.input_lab[0]:.2f}, A={self.input_lab[1]:.2f}, B={self.input_lab[2]:.2f}",
+            'Closest ISCC-NBS Color': closest_color_name,
+            'Delta-E Value': f"{self.delta_e:.2f}",
+            'Closest LAB': f"L={closest_lab[0]:.2f}, A={closest_lab[1]:.2f}, B={closest_lab[2]:.2f}",
+            'Input RGB': input_rgb,
+            'Closest RGB': closest_rgb
+        }
+        display_results_table(results)
+        csv_results = pd.DataFrame([results]).to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="Download Results as CSV",
+            data=csv_results,
+            file_name='color_match_results.csv',
+            mime='text/csv',
+        )
+
+# =============================================================================
+# Streamlit UI Functions
+# =============================================================================
+
+def display_sidebar() -> Tuple[Any, Any, List[float], str]:
+    """
+    Displays the sidebar widgets for file uploads and LAB color input.
+    Returns:
+        - CSV file uploader object.
+        - RDF file uploader object.
+        - Input LAB color list.
+        - Delta-E method as a lowercase string ('euclidean' or 'ciede2000').
+    """
     st.sidebar.header("Upload & Input")
     csv_file = st.sidebar.file_uploader("Upload 'iscc_nbs_lab_colors.csv'", type=['csv'])
     rdf_file = st.sidebar.file_uploader("Upload Getty AAT RDF (XML)", type=['xml'])
-    
     with st.sidebar.expander("Instructions", expanded=False):
         st.markdown(
             """
             1. **Upload Dataset:** Upload the CSV file containing LAB values and color names.
             2. **Upload RDF (Optional):** Upload the RDF file with Getty AAT color terms.
-            3. **Input LAB Color:** Choose your input method (sliders or manual entry).
-            4. **Choose Delta-E Metric:** Select between Euclidean ΔE*76 or CIEDE2000.
-            5. **Find Closest Color:** Click the button to see the closest matching color and various visualizations.
+            3. **Input LAB Color:** Use sliders or manual input for LAB values.
+            4. **Choose Delta-E Metric:** Select Euclidean ΔE76 or CIEDE2000.
+            5. **Find Closest Color:** Click to analyze and visualize.
             """
         )
-    
-    # Delta-E metric selection
-    delta_e_metric = st.sidebar.radio("Select Delta-E metric:", ("Euclidean ΔE76", "CIEDE2000"))
-    delta_e_func = calculate_delta_e_euclidean if delta_e_metric == "Euclidean ΔE76" else calculate_delta_e_ciede2000
-
-    if csv_file is None:
-        st.info("Please upload your 'iscc_nbs_lab_colors.csv' file to begin.")
-        debug_log("No CSV dataset uploaded.")
-        return
-
-    dataset_df = load_dataset(csv_file)
-    if dataset_df.empty:
-        debug_log("Dataset is empty after loading; terminating process.")
-        return
-
-    st.success("Dataset uploaded and validated successfully.")
-    with st.expander("View Dataset Preview", expanded=False):
-        st.dataframe(dataset_df.head())
-    
-    # Process RDF file (if provided)
-    df_alternatives = None
-    if rdf_file is not None:
-        try:
-            df_alternatives = extract_alternative_terms_rdf(rdf_file)
-            if not df_alternatives.empty:
-                st.markdown("### **Alternative Color Terms from RDF:**")
-                st.dataframe(df_alternatives)
-                # Show a default sunburst chart with a fallback color if no LAB matching has occurred yet
-                fig_sunburst = create_alternative_terms_sunburst(df_alternatives, base_color="rgb(255, 99, 71)")
-                st.plotly_chart(fig_sunburst, use_container_width=True)
-            else:
-                st.warning("No alternative terms found in the RDF.")
-        except Exception as e:
-            st.error(f"Error processing RDF file: {e}")
-            debug_log(f"Error processing RDF file: {e}")
-    
-    # LAB Color Input Options
-    input_method = st.sidebar.radio("Choose LAB Input Method:", ("Slider Input", "Manual Input"))
+    delta_e_metric = st.sidebar.radio("Select Delta-E metric:", ("Euclidean ΔE76", "CIEDE2000"), index=0)
+    st.sidebar.markdown("### LAB Color Input")
+    input_method = st.sidebar.radio("Input Method:", ("Slider Input", "Manual Input"), horizontal=True)
     if input_method == "Slider Input":
-        st.sidebar.markdown("### LAB Color via Sliders")
-        lab_l = st.sidebar.slider("L:", 0.0, 100.0, 50.0, 0.01)
-        lab_a = st.sidebar.slider("A:", -128.0, 127.0, 0.0, 0.01)
-        lab_b = st.sidebar.slider("B:", -128.0, 127.0, 0.0, 0.01)
+        lab_l = st.sidebar.slider("L:", 0.0, 100.0, 50.0, 0.1)
+        lab_a = st.sidebar.slider("A:", -128.0, 127.0, 0.0, 0.1)
+        lab_b = st.sidebar.slider("B:", -128.0, 127.0, 0.0, 0.1)
     else:
-        st.sidebar.markdown("### LAB Color via Manual Input")
         lab_l = st.sidebar.number_input("L (0-100):", min_value=0.0, max_value=100.0, value=50.0, step=0.1)
         lab_a = st.sidebar.number_input("A (-128 to 127):", min_value=-128.0, max_value=127.0, value=0.0, step=0.1)
         lab_b = st.sidebar.number_input("B (-128 to 127):", min_value=-128.0, max_value=127.0, value=0.0, step=0.1)
-    
     input_lab = [lab_l, lab_a, lab_b]
-    
+    # Return the lowercase method string ('euclidean' or 'ciede2000')
+    method_key = delta_e_metric.lower().split()[0]
+    return csv_file, rdf_file, input_lab, method_key
+
+def main() -> None:
+    """Main function to run the Streamlit app."""
+    st.set_page_config(page_title="Enhanced LAB Color Analyzer", layout="wide", page_icon="🎨")
+    st.markdown("<style>body { background-color: white; color: black; }</style>", unsafe_allow_html=True)
+    st.title("Enhanced LAB Color Analyzer")
+    st.markdown(
+        """
+        Welcome to the **Enhanced LAB Color Analyzer**!  
+        Upload your ISCC-NBS LAB colors dataset and input your LAB color values to find the closest 
+        matching color. View detailed visualizations and, optionally, explore alternative color terms 
+        from a Getty AAT RDF file.
+        """
+    )
+
+    # Sidebar: file uploads and input
+    csv_file, rdf_file, input_lab, delta_e_method = display_sidebar()
+    if csv_file is None:
+        st.info("Please upload your 'iscc_nbs_lab_colors.csv' file to begin.")
+        return
+
+    analyzer = ColorAnalyzer()
+    with st.spinner("Loading dataset..."):
+        if not analyzer.load_dataset(csv_file):
+            st.error("Dataset loading failed. Please check the CSV file.")
+            return
+    st.success("Dataset uploaded and validated successfully.")
+    with st.expander("View Dataset Preview", expanded=False):
+        st.dataframe(analyzer.dataset_df.head())
+
+    analyzer.load_rdf(rdf_file)
+    analyzer.set_delta_e_method(delta_e_method)
     if st.sidebar.button("Find Closest Color"):
-        debug_log("User initiated color matching process.")
-        if validate_lab_color(input_lab):
+        if analyzer.set_input_color(input_lab):
             with st.spinner("Processing..."):
-                closest_color, delta_e = find_closest_color(input_lab, dataset_df, delta_e_func=delta_e_func)
-                if closest_color is not None:
-                    closest_color_name = closest_color['Color Name']
-                    closest_lab = [closest_color['L'], closest_color['A'], closest_color['B']]
-                    input_rgb = lab_to_rgb(input_lab)
-                    closest_rgb = lab_to_rgb(closest_lab)
-                    st.markdown("### **Results:**")
-                    st.markdown(
-                        f"""
-                        **Input LAB Color:** L={input_lab[0]}, A={input_lab[1]}, B={input_lab[2]}  
-                        **Closest ISCC-NBS Color:** {closest_color_name}  
-                        **Delta-E Value ({delta_e_metric}):** {delta_e:.2f}  
-                        **Closest LAB Color:** L={closest_lab[0]}, A={closest_lab[1]}, B={closest_lab[2]}  
-                        **Input RGB Color:** {input_rgb}  
-                        **Closest RGB Color:** {closest_rgb}
-                        """
-                    )
-                    # If an RDF file was uploaded, update the sunburst chart to mirror the computed color
-                    if df_alternatives is not None and not df_alternatives.empty:
-                        fig_sunburst = create_alternative_terms_sunburst(df_alternatives, base_color=f"rgb({closest_rgb[0]}, {closest_rgb[1]}, {closest_rgb[2]})")
-                        st.plotly_chart(fig_sunburst, use_container_width=True)
-                    tabs = st.tabs([
-                        "Color Comparison", "LAB Comparison", "3D LAB Plot", "Delta-E Histogram", "Color Density", "Pairwise Scatter"
-                    ])
-                    with tabs[0]:
-                        fig1 = create_color_comparison_plot(input_rgb, closest_rgb, input_lab, closest_lab, closest_color_name, delta_e)
-                        st.plotly_chart(fig1, use_container_width=True)
-                    with tabs[1]:
-                        fig2 = create_lab_comparison_bar(input_lab, closest_lab, closest_color_name, input_rgb, closest_rgb)
-                        st.plotly_chart(fig2, use_container_width=True)
-                    with tabs[2]:
-                        fig3 = create_3d_lab_plot(input_lab, closest_lab, closest_color_name, dataset_df, input_rgb, closest_rgb)
-                        st.plotly_chart(fig3, use_container_width=True)
-                    with tabs[3]:
-                        delta_e_values = delta_e_func(input_lab, dataset_df)
-                        fig4 = create_delta_e_histogram(delta_e_values)
-                        st.plotly_chart(fig4, use_container_width=True)
-                    with tabs[4]:
-                        fig5 = create_color_density_heatmap(dataset_df)
-                        st.plotly_chart(fig5, use_container_width=True)
-                    with tabs[5]:
-                        fig_splom = create_pairwise_scatter_matrix(dataset_df, input_lab, closest_lab)
-                        st.plotly_chart(fig_splom, use_container_width=True)
-                    st.markdown("### **Results Table:**")
-                    results = {
-                        'Input LAB': f"L={input_lab[0]}, A={input_lab[1]}, B={input_lab[2]}",
-                        'Closest ISCC-NBS Color': closest_color_name,
-                        'Delta-E Value': f"{delta_e:.2f}",
-                        'Closest LAB': f"L={closest_lab[0]}, A={closest_lab[1]}, B={closest_lab[2]}",
-                        'Input RGB': input_rgb,
-                        'Closest RGB': closest_rgb
-                    }
-                    display_results_table(results)
-                    debug_log("Color matching process completed successfully.")
-                    csv_results = pd.DataFrame([results]).to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="Download Results as CSV",
-                        data=csv_results,
-                        file_name='color_match_results.csv',
-                        mime='text/csv',
-                    )
+                if analyzer.match_color():
+                    analyzer.display_results()
+                    figs = analyzer.generate_visualizations()
+                    if figs:
+                        tabs = st.tabs(["Color Comparison", "LAB Comparison", "3D LAB Plot",
+                                         "Delta-E Histogram", "Color Density", "Pairwise Scatter"])
+                        with tabs[0]:
+                            st.plotly_chart(figs["comparison"], use_container_width=True)
+                        with tabs[1]:
+                            st.plotly_chart(figs["lab_bar"], use_container_width=True)
+                        with tabs[2]:
+                            st.plotly_chart(figs["lab_3d"], use_container_width=True)
+                        with tabs[3]:
+                            st.plotly_chart(figs["delta_hist"], use_container_width=True)
+                        with tabs[4]:
+                            st.plotly_chart(figs["density_heatmap"], use_container_width=True)
+                        with tabs[5]:
+                            st.plotly_chart(figs["scatter_matrix"], use_container_width=True)
+                    else:
+                        st.error("Error generating visualizations.")
                 else:
-                    debug_log("Closest color not found; process terminated.")
+                    st.error("An error occurred during color matching. Please check your inputs and dataset.")
         else:
-            debug_log("Input LAB color validation failed.")
+            st.error("Invalid LAB color input. Please check the values.")
 
 if __name__ == "__main__":
     main()
