@@ -142,6 +142,9 @@ def find_closest_color(input_lab: Union[List[float], Tuple[float, float, float]]
     Finds the closest color from the dataset to the input LAB color based on Delta-E.
     Returns the closest color row and its Delta-E value.
     """
+    if dataset_df.empty:
+        _log_and_report("Dataset is empty after validation.", "error", "Dataset Error")
+        return None, None
     delta_e_values = calculate_delta_e(input_lab, dataset_df, method=delta_e_method)
     if np.all(np.isnan(delta_e_values)):
         _log_and_report("Delta-E calculation resulted in all NaN values. Check dataset and input.", 'error')
@@ -166,9 +169,16 @@ def load_dataset(uploaded_file: IO[Any]) -> pd.DataFrame:
         missing_cols = REQUIRED_COLUMNS - set(dataset_df.columns)
         _log_and_report(f"CSV is missing required columns: {missing_cols}", 'error', 'Dataset Error')
         raise DatasetError("Dataset missing required columns.")
+    dataset_df = dataset_df.copy()
+    dataset_df['Color Name'] = dataset_df['Color Name'].astype(str).str.strip()
+    for col in ['L', 'A', 'B']:
+        dataset_df[col] = pd.to_numeric(dataset_df[col], errors='coerce')
     if dataset_df[list(REQUIRED_COLUMNS)].isnull().any().any():
-        _log_and_report("CSV contains missing values in required columns.", 'error', 'Dataset Error')
-        raise DatasetError("Dataset contains missing values.")
+        _log_and_report("CSV contains missing or non-numeric values in required columns.", 'error', 'Dataset Error')
+        raise DatasetError("Dataset contains invalid values.")
+    if dataset_df.empty:
+        _log_and_report("CSV contains no valid rows after cleaning.", 'error', 'Dataset Error')
+        raise DatasetError("Dataset is empty.")
     return dataset_df
 
 @st.cache_data(show_spinner=True)
