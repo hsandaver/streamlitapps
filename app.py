@@ -376,6 +376,7 @@ def inject_global_styles() -> None:
             font-size: 0.78rem;
             letter-spacing: 0.08em;
             text-transform: uppercase;
+            margin-top: -0.6rem;
         }}
 
         .empty-state {{
