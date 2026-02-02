@@ -8,6 +8,8 @@ Features modular data handling, refined visualizations, and a premium UI.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import io
+import json
 from typing import Union, List, Tuple, Optional, Any, IO, Dict
 import logging
 import re
@@ -17,6 +19,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 from colormath.color_conversions import convert_color
 from colormath.color_diff import delta_e_cie2000
 from colormath.color_objects import LabColor, sRGBColor
@@ -78,6 +81,9 @@ THEME = {
 
 FONT_BODY = "Space Grotesk"
 FONT_DISPLAY = "Fraunces"
+TAG_OPTIONS = ["Light", "Mid", "Deep", "Warm", "Cool", "Balanced", "Vivid", "Soft", "Muted"]
+TAG_COLOR_PALETTE = [THEME["accent"], THEME["accent_2"], THEME["accent_3"]]
+SPARKLINE_POINTS = 28
 
 # =============================================================================
 # Data Models
@@ -131,6 +137,12 @@ def inject_global_styles() -> None:
         html, body, [class*="st-"] {{
             font-family: '{FONT_BODY}', sans-serif;
             color: var(--ink);
+        }}
+
+        span[data-testid="stIconMaterial"] {{
+            font-family: "Material Symbols Rounded", "Material Symbols Outlined", "Material Symbols Sharp", "Material Icons", sans-serif !important;
+            font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
+            line-height: 1;
         }}
 
         .stApp {{
@@ -270,6 +282,7 @@ def inject_global_styles() -> None:
             border-radius: 22px;
             padding: 1.5rem;
             box-shadow: var(--shadow);
+            min-height: 170px;
         }}
 
         .color-card {{
@@ -282,6 +295,7 @@ def inject_global_styles() -> None:
             border-radius: 20px;
             padding: 1.1rem;
             box-shadow: var(--shadow);
+            min-height: 170px;
         }}
 
         .color-swatch {{
@@ -332,6 +346,10 @@ def inject_global_styles() -> None:
             color: var(--muted);
             letter-spacing: 0.06em;
             text-transform: uppercase;
+        }}
+
+        .section-spacer {{
+            height: 16px;
         }}
 
         .status-pill {{
@@ -409,17 +427,67 @@ def inject_global_styles() -> None:
         }}
 
         div[data-testid="stSidebar"] {{
-            background: linear-gradient(180deg, rgba(17, 20, 28, 0.98), rgba(17, 20, 28, 0.92));
-            color: #f2f2f4;
-            border-right: 1px solid rgba(255, 255, 255, 0.08);
+            background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(247, 248, 251, 0.98));
+            color: var(--ink);
+            border-right: 1px solid rgba(24, 24, 28, 0.08);
         }}
 
         div[data-testid="stSidebar"] h1, div[data-testid="stSidebar"] h2, div[data-testid="stSidebar"] h3 {{
-            color: #f9f9fb;
+            color: var(--ink);
         }}
 
         div[data-testid="stSidebar"] label, div[data-testid="stSidebar"] span {{
-            color: rgba(249, 249, 251, 0.8);
+            color: var(--muted);
+        }}
+
+        .sidebar-card {{
+            background: rgba(255, 255, 255, 0.9);
+            border: 1px solid rgba(24, 24, 28, 0.12);
+            border-radius: 16px;
+            padding: 1rem 1.1rem;
+            margin: 0.75rem 0 1rem;
+            color: var(--ink);
+            box-shadow: 0 12px 28px rgba(18, 20, 26, 0.06);
+        }}
+
+        .sidebar-card h4 {{
+            margin: 0 0 0.5rem;
+            font-size: 0.95rem;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--muted);
+        }}
+
+        .sidebar-card ol {{
+            margin: 0.2rem 0 0 1rem;
+            padding: 0;
+            line-height: 1.6;
+            font-size: 0.85rem;
+            color: var(--muted);
+        }}
+
+        div[data-testid="stWidgetHoverOverlay"],
+        div[data-testid="stWidgetTooltip"],
+        div[data-testid="stTooltip"],
+        div[data-testid="stTooltipContent"],
+        div[data-testid="stTooltipContent"] *,
+        div[data-testid="stWidgetLabelDetails"],
+        div[data-testid="stElementToolbar"],
+        div[data-testid="stElementToolbar"] *,
+        [data-baseweb="tooltip"],
+        [data-baseweb="tooltip"] *,
+        [data-testid*="Tooltip"],
+        [data-testid*="tooltip"],
+        [role="tooltip"],
+        [role="tooltip"] *,
+        [title="key"],
+        [aria-label="key"] {{
+            display: none !important;
+            visibility: hidden !important;
+        }}
+
+        kbd {{
+            display: none !important;
         }}
 
         @keyframes rise {{
@@ -435,6 +503,64 @@ def inject_global_styles() -> None:
         </style>
         """,
         unsafe_allow_html=True,
+    )
+
+
+def suppress_key_overlay() -> None:
+    """Last-resort suppression for stray Streamlit hover/tool overlays."""
+    components.html(
+        """
+        <script>
+        (function () {
+          const matchesKey = (node) => {
+            if (!node || !node.textContent) return false;
+            const text = node.textContent.trim().toLowerCase();
+            if (!text) return false;
+            if (text.length > 12) return false;
+            return text === "key" || text === "keyb" || text === "keyboard";
+          };
+
+          const looksLikeOverlay = (node) => {
+            try {
+              const style = window.getComputedStyle(node);
+              if (style.position !== "fixed" && style.position !== "absolute") return false;
+              const rect = node.getBoundingClientRect();
+              return rect.top >= 0 && rect.top < 90 && rect.left < 220 && rect.width < 180;
+            } catch (err) {
+              return false;
+            }
+          };
+
+          const hideIfMatch = (node) => {
+            if (!node || node.nodeType !== 1) return;
+            if (matchesKey(node) && looksLikeOverlay(node)) {
+              node.style.display = "none";
+              node.style.visibility = "hidden";
+              node.setAttribute("data-hidden-by", "suppress_key_overlay");
+            }
+          };
+
+          const scan = () => {
+            document.querySelectorAll("body *").forEach((node) => hideIfMatch(node));
+          };
+
+          scan();
+          const observer = new MutationObserver((mutations) => {
+            for (const mutation of mutations) {
+              mutation.addedNodes.forEach((node) => {
+                hideIfMatch(node);
+                if (node.querySelectorAll) {
+                  node.querySelectorAll("*").forEach((child) => hideIfMatch(child));
+                }
+              });
+            }
+          });
+          observer.observe(document.body, { childList: true, subtree: true });
+        })();
+        </script>
+        """,
+        height=0,
+        width=0,
     )
 
 # =============================================================================
@@ -636,6 +762,90 @@ def extract_alternative_terms_rdf(rdf_file: IO[Any]) -> pd.DataFrame:
 
     for desc in g.objects(predicate=DC_ELEM):
         add_term(desc, skip_digit_filter=True)
+
+    return pd.DataFrame(rows).drop_duplicates()
+
+
+@st.cache_data(show_spinner=True)
+def extract_alternative_terms_json(json_file: IO[Any]) -> pd.DataFrame:
+    """
+    Extracts alternative color terms from a Getty AAT JSON document.
+    Pulls terms from identified_by (preferred/alternate labels) and subject_of descriptions.
+    """
+    try:
+        data = json.load(json_file)
+    except Exception as exc:
+        _log_and_report(f"Failed to parse JSON file: {exc}", "error", "JSON Parsing Error")
+        raise RDFParsingError("Failed to parse JSON file.")
+
+    rows: List[Dict[str, str]] = []
+
+    def get_lang(obj: Any) -> str:
+        if isinstance(obj, dict):
+            lang = obj.get("language")
+            if isinstance(lang, list) and lang:
+                return lang[0].get("_label") or lang[0].get("id") or "unknown"
+            if isinstance(lang, dict):
+                return lang.get("_label") or lang.get("id") or "unknown"
+        return "unknown"
+
+    def add_term(term: Any, lang: str, skip_digit_filter: bool = False) -> None:
+        if not isinstance(term, str):
+            return
+        term_text = term.strip()
+        if not term_text:
+            return
+        if not skip_digit_filter:
+            if "centroid" in term_text.lower():
+                rows.append({"Term": term_text, "Language": lang or "unknown"})
+                return
+            if re.search(r"\d", term_text) or len(term_text) > 50:
+                return
+        else:
+            if len(term_text) > 100:
+                return
+        rows.append({"Term": term_text, "Language": lang or "unknown"})
+
+    def process_record(record: Dict[str, Any]) -> None:
+        if not isinstance(record, dict):
+            return
+        add_term(record.get("_label"), "unknown", skip_digit_filter=False)
+
+        identified = record.get("identified_by", [])
+        if isinstance(identified, dict):
+            identified = [identified]
+        if isinstance(identified, list):
+            for name_obj in identified:
+                if not isinstance(name_obj, dict):
+                    continue
+                lang = get_lang(name_obj)
+                add_term(name_obj.get("content"), lang)
+                alternatives = name_obj.get("alternative", [])
+                if isinstance(alternatives, dict):
+                    alternatives = [alternatives]
+                if isinstance(alternatives, list):
+                    for alt in alternatives:
+                        if not isinstance(alt, dict):
+                            continue
+                        alt_lang = get_lang(alt) or lang
+                        add_term(alt.get("content"), alt_lang)
+
+        subject_of = record.get("subject_of", [])
+        if isinstance(subject_of, dict):
+            subject_of = [subject_of]
+        if isinstance(subject_of, list):
+            for desc in subject_of:
+                if not isinstance(desc, dict):
+                    continue
+                lang = get_lang(desc)
+                add_term(desc.get("content"), lang, skip_digit_filter=True)
+
+    if isinstance(data, dict):
+        process_record(data)
+    elif isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                process_record(item)
 
     return pd.DataFrame(rows).drop_duplicates()
 
@@ -1092,10 +1302,30 @@ class ColorAnalyzer:
     def load_rdf(self, rdf_file: Optional[IO[Any]]) -> None:
         """Processes the RDF file and stores alternative color terms."""
         if rdf_file is not None:
+            file_name = getattr(rdf_file, "name", "").lower()
             try:
-                self.rdf_alternatives_df = extract_alternative_terms_rdf(rdf_file)
-            except RDFParsingError:
-                self.rdf_alternatives_df = None
+                data_bytes = rdf_file.getvalue() if hasattr(rdf_file, "getvalue") else rdf_file.read()
+            except Exception:
+                data_bytes = None
+
+            if data_bytes is None:
+                try:
+                    self.rdf_alternatives_df = extract_alternative_terms_rdf(rdf_file)
+                except RDFParsingError:
+                    self.rdf_alternatives_df = None
+                return
+
+            is_json = file_name.endswith(".json") or data_bytes.lstrip().startswith((b"{", b"["))
+            if is_json:
+                try:
+                    self.rdf_alternatives_df = extract_alternative_terms_json(io.BytesIO(data_bytes))
+                except RDFParsingError:
+                    self.rdf_alternatives_df = None
+            else:
+                try:
+                    self.rdf_alternatives_df = extract_alternative_terms_rdf(io.BytesIO(data_bytes))
+                except RDFParsingError:
+                    self.rdf_alternatives_df = None
         else:
             self.rdf_alternatives_df = None
 
@@ -1177,18 +1407,27 @@ def display_sidebar() -> Tuple[Any, Any, List[float], str]:
     st.sidebar.header("Input Studio")
     st.sidebar.markdown("Upload your datasets and tune the LAB values.")
     csv_file = st.sidebar.file_uploader("ISCC-NBS LAB CSV", type=["csv"])
-    rdf_file = st.sidebar.file_uploader("Getty AAT RDF (XML)", type=["xml"])
-    with st.sidebar.expander("Workflow", expanded=True):
-        st.markdown(
-            """
-            1. Upload the ISCC-NBS LAB dataset.
-            2. Optionally upload the Getty AAT RDF file.
-            3. Adjust the LAB values.
-            4. Pick a Delta-E method.
-            5. Analyze the closest color match.
-            """
-        )
-    delta_e_metric = st.sidebar.radio("Delta-E method", ("Euclidean Delta E 76", "CIEDE2000"), index=0)
+    rdf_file = st.sidebar.file_uploader("Getty AAT RDF / JSON", type=["xml", "json"])
+    st.sidebar.markdown(
+        """
+        <div class="sidebar-card">
+            <h4>Workflow</h4>
+            <ol>
+                <li>Upload the ISCC-NBS LAB dataset.</li>
+                <li>Optionally upload the Getty AAT RDF or JSON file.</li>
+                <li>Adjust the LAB values.</li>
+                <li>Pick a Delta-E method.</li>
+                <li>Analyze the closest color match.</li>
+            </ol>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    delta_e_metric = st.sidebar.radio(
+        "Delta-E method",
+        ("Euclidean Delta E 76", "CIEDE2000"),
+        index=0,
+    )
     st.sidebar.markdown("### LAB Input")
     input_method = st.sidebar.radio("Input mode", ("Slider", "Manual"), horizontal=True)
     if input_method == "Slider":
@@ -1196,12 +1435,84 @@ def display_sidebar() -> Tuple[Any, Any, List[float], str]:
         lab_a = st.sidebar.slider("A", -128.0, 127.0, 0.0, 0.1)
         lab_b = st.sidebar.slider("B", -128.0, 127.0, 0.0, 0.1)
     else:
-        lab_l = st.sidebar.number_input("L (0-100)", min_value=0.0, max_value=100.0, value=50.0, step=0.1)
-        lab_a = st.sidebar.number_input("A (-128 to 127)", min_value=-128.0, max_value=127.0, value=0.0, step=0.1)
-        lab_b = st.sidebar.number_input("B (-128 to 127)", min_value=-128.0, max_value=127.0, value=0.0, step=0.1)
+        lab_l = st.sidebar.number_input(
+            "L (0-100)",
+            min_value=0.0,
+            max_value=100.0,
+            value=50.0,
+            step=0.1,
+        )
+        lab_a = st.sidebar.number_input(
+            "A (-128 to 127)",
+            min_value=-128.0,
+            max_value=127.0,
+            value=0.0,
+            step=0.1,
+        )
+        lab_b = st.sidebar.number_input(
+            "B (-128 to 127)",
+            min_value=-128.0,
+            max_value=127.0,
+            value=0.0,
+            step=0.1,
+        )
     input_lab = [lab_l, lab_a, lab_b]
     method_key = "ciede2000" if "CIEDE" in delta_e_metric else "euclidean"
     return csv_file, rdf_file, input_lab, method_key
+
+
+def sparkline_sample(series: pd.Series, points: int = SPARKLINE_POINTS) -> List[float]:
+    values = series.dropna().astype(float).values
+    if values.size == 0:
+        return []
+    if values.size <= points:
+        return values.tolist()
+    quantiles = np.linspace(0, 1, points)
+    return np.quantile(values, quantiles).tolist()
+
+
+def infer_color_tags(row: pd.Series) -> List[str]:
+    l_val = float(row["L"])
+    a_val = float(row["A"])
+    b_val = float(row["B"])
+    chroma = (a_val**2 + b_val**2) ** 0.5
+    tags: List[str] = []
+
+    if l_val >= 70:
+        tags.append("Light")
+    elif l_val <= 35:
+        tags.append("Deep")
+    else:
+        tags.append("Mid")
+
+    if a_val >= 12 and b_val >= 12:
+        tags.append("Warm")
+    elif a_val <= -12 and b_val <= -12:
+        tags.append("Cool")
+    else:
+        tags.append("Balanced")
+
+    if chroma >= 60:
+        tags.append("Vivid")
+    elif chroma <= 25:
+        tags.append("Muted")
+    else:
+        tags.append("Soft")
+
+    return tags
+
+
+def build_top_matches(
+    dataset_df: pd.DataFrame,
+    input_lab: List[float],
+    method: str,
+    top_n: int = 10,
+) -> pd.DataFrame:
+    delta_e_values = calculate_delta_e(input_lab, dataset_df, method=method)
+    ranked = dataset_df.copy()
+    ranked["Delta E"] = delta_e_values
+    ranked = ranked.dropna(subset=["Delta E"]).sort_values("Delta E").head(top_n)
+    return ranked[["Color Name", "Delta E"]]
 
 
 def summarize_dataset(dataset_df: pd.DataFrame) -> Dict[str, Any]:
@@ -1220,18 +1531,53 @@ def summarize_dataset(dataset_df: pd.DataFrame) -> Dict[str, Any]:
 def render_dataset_overview(dataset_df: pd.DataFrame) -> None:
     summary = summarize_dataset(dataset_df)
     render_section_header("Dataset Overview", "A quick read on the ISCC-NBS archive.")
+    spark_l = sparkline_sample(dataset_df["L"])
+    spark_a = sparkline_sample(dataset_df["A"])
+    spark_b = sparkline_sample(dataset_df["B"])
+
     cols = st.columns(4)
-    cols[0].metric("Colors", f"{summary['rows']:,}")
-    cols[1].metric("Unique Names", f"{summary['unique']:,}")
-    cols[2].metric("L Range", f"{summary['l_min']:.1f} - {summary['l_max']:.1f}")
-    cols[3].metric("A Range", f"{summary['a_min']:.1f} - {summary['a_max']:.1f}")
+    cols[0].metric("Colors", f"{summary['rows']:,}", border=True)
+    cols[1].metric("Unique Names", f"{summary['unique']:,}", border=True)
+    cols[2].metric(
+        "L Spread",
+        f"{summary['l_min']:.1f} - {summary['l_max']:.1f}",
+        chart_data=spark_l,
+        border=True,
+    )
+    cols[3].metric(
+        "A Spread",
+        f"{summary['a_min']:.1f} - {summary['a_max']:.1f}",
+        chart_data=spark_a,
+        border=True,
+    )
+
     cols = st.columns(4)
-    cols[0].metric("B Range", f"{summary['b_min']:.1f} - {summary['b_max']:.1f}")
-    cols[1].metric("Dataset Health", "Validated")
-    cols[2].metric("Color Space", "CIELAB")
-    cols[3].metric("Ready", "Yes")
+    cols[0].metric(
+        "B Spread",
+        f"{summary['b_min']:.1f} - {summary['b_max']:.1f}",
+        chart_data=spark_b,
+        border=True,
+    )
+    cols[1].metric("Dataset Health", "Validated", border=True)
+    cols[2].metric("Color Space", "CIELAB", border=True)
+    cols[3].metric("Ready", "Yes", border=True)
+
     with st.expander("Preview dataset", expanded=False):
-        st.dataframe(dataset_df.head(12), use_container_width=True)
+        preview_df = dataset_df.head(12).copy()
+        preview_df["Color Tags"] = preview_df.apply(infer_color_tags, axis=1)
+        st.dataframe(
+            preview_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Color Tags": st.column_config.MultiselectColumn(
+                    "Color Tags",
+                    options=TAG_OPTIONS,
+                    color=TAG_COLOR_PALETTE,
+                    help="Auto-inferred tags derived from LAB values.",
+                )
+            },
+        )
 
 
 def render_input_preview(input_lab: List[float], input_rgb: Tuple[int, int, int], method_label: str) -> None:
@@ -1249,9 +1595,14 @@ def render_input_preview(input_lab: List[float], input_rgb: Tuple[int, int, int]
             """,
             unsafe_allow_html=True,
         )
+    st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
 
 
-def render_results_section(result: ColorMatchResult, rdf_df: Optional[pd.DataFrame]) -> None:
+def render_results_section(
+    result: ColorMatchResult,
+    rdf_df: Optional[pd.DataFrame],
+    dataset_df: pd.DataFrame,
+) -> None:
     render_section_header("Match Studio", "Your closest ISCC-NBS match and key metrics.")
     cols = st.columns(3)
     cols[0].metric("Closest Match", result.closest_name)
@@ -1265,6 +1616,18 @@ def render_results_section(result: ColorMatchResult, rdf_df: Optional[pd.DataFra
         render_color_card("Closest Match", result.closest_name, result.closest_rgb, result.closest_lab)
 
     render_blend_card(result.input_rgb, result.closest_rgb)
+
+    top_matches = build_top_matches(dataset_df, result.input_lab, result.method, top_n=10)
+    with st.expander("Top 10 nearest colors (sorted by Delta-E)", expanded=False):
+        st.bar_chart(
+            top_matches,
+            x="Color Name",
+            y="Delta E",
+            color=THEME["accent"],
+            horizontal=True,
+            sort="Delta E",
+            height=320,
+        )
 
     results_df = build_results_dataframe(result)
     with st.expander("Detailed results", expanded=False):
@@ -1293,13 +1656,14 @@ def render_visuals_section(figs: Dict[str, go.Figure]) -> None:
     render_section_header("Visual Diagnostics", "Explore structure, density, and distribution.")
     tabs = st.tabs(
         [
-            "Comparison",
-            "LAB Bars",
-            "3D LAB",
-            "Delta-E",
-            "Density",
-            "Scatter Matrix",
-        ]
+            ":sparkles: Comparison",
+            ":bar_chart: LAB Bars",
+            ":globe_with_meridians: 3D LAB",
+            ":chart_with_upwards_trend: Delta-E",
+            ":cyclone: Density",
+            ":satellite: Scatter Matrix",
+        ],
+        default=":sparkles: Comparison",
     )
     with tabs[0]:
         st.plotly_chart(figs["comparison"], use_container_width=True)
@@ -1319,8 +1683,14 @@ def render_visuals_section(figs: Dict[str, go.Figure]) -> None:
 # =============================================================================
 
 def main() -> None:
-    st.set_page_config(page_title="Getty Colour Identifier", layout="wide", page_icon="C")
+    st.set_page_config(
+        page_title="Getty Colour Identifier",
+        layout="wide",
+        page_icon="C",
+        initial_sidebar_state="expanded",
+    )
     inject_global_styles()
+    suppress_key_overlay()
 
     csv_file, rdf_file, input_lab, delta_e_method = display_sidebar()
     method_label = "CIEDE2000" if delta_e_method == "ciede2000" else "Euclidean Delta E 76"
@@ -1352,7 +1722,7 @@ def main() -> None:
             with st.spinner("Analyzing..."):
                 result = analyzer.match_color()
             if result:
-                render_results_section(result, analyzer.rdf_alternatives_df)
+                render_results_section(result, analyzer.rdf_alternatives_df, analyzer.dataset_df)
                 figs = analyzer.generate_visualizations(result)
                 if figs:
                     render_visuals_section(figs)
