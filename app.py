@@ -376,7 +376,11 @@ def inject_global_styles() -> None:
             font-size: 0.78rem;
             letter-spacing: 0.08em;
             text-transform: uppercase;
-            margin-top: -0.6rem;
+        }}
+
+        .status-wrap {{
+            margin-top: 0.35rem;
+            margin-bottom: 0.85rem;
         }}
 
         .empty-state {{
@@ -1253,7 +1257,10 @@ def render_empty_state() -> None:
 
 
 def render_status_pill(text: str) -> None:
-    st.markdown(f"<div class='status-pill'>{text}</div>", unsafe_allow_html=True)
+    st.markdown(
+        f"<div class='status-wrap'><div class='status-pill'>{text}</div></div>",
+        unsafe_allow_html=True,
+    )
 
 
 def render_color_card(title: str, subtitle: str, rgb: Tuple[int, int, int], lab: List[float]) -> None:
