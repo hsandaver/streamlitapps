@@ -186,7 +186,7 @@ def inject_global_styles() -> None:
             border-radius: 28px;
             background: var(--card);
             border: 1px solid var(--card-border);
-            box-shadow: var(--shadow);
+            box-shadow: 0 14px 32px rgba(18, 20, 26, 0.12);
             position: relative;
             overflow: hidden;
             animation: rise 700ms ease-out;
@@ -264,6 +264,14 @@ def inject_global_styles() -> None:
         .section-heading {{
             margin-top: 2.5rem;
             margin-bottom: 1.4rem;
+        }}
+
+        .section-accent {{
+            width: 92px;
+            height: 4px;
+            border-radius: 999px;
+            margin-top: 0.6rem;
+            background: linear-gradient(90deg, var(--accent), var(--accent-3));
         }}
 
         .section-title {{
@@ -352,6 +360,10 @@ def inject_global_styles() -> None:
             height: 16px;
         }}
 
+        .section-spacer-lg {{
+            height: 28px;
+        }}
+
         .status-pill {{
             display: inline-flex;
             gap: 0.4rem;
@@ -382,6 +394,20 @@ def inject_global_styles() -> None:
             border-radius: 18px;
             border: 1px solid var(--card-border);
             box-shadow: var(--shadow);
+        }}
+
+        div[data-testid="stMetric"] svg {{
+            opacity: 0.35;
+        }}
+
+        div[data-testid="stFileUploader"] section {{
+            padding: 0.55rem 0.8rem !important;
+        }}
+
+        .sidebar-divider {{
+            height: 1px;
+            background: rgba(24, 24, 28, 0.08);
+            margin: 0.75rem 0 1rem;
         }}
 
         div[data-testid="stMetric"] label {{
@@ -1165,13 +1191,15 @@ def create_pairwise_scatter_matrix(
 # UI Helpers
 # =============================================================================
 
-def render_section_header(title: str, subtitle: Optional[str] = None) -> None:
+def render_section_header(title: str, subtitle: Optional[str] = None, accent: bool = False) -> None:
     subtitle_html = f"<div class='section-subtitle'>{subtitle}</div>" if subtitle else ""
+    accent_html = "<div class='section-accent'></div>" if accent else ""
     st.markdown(
         f"""
         <div class="section-heading">
             <div class="section-title">{title}</div>
             {subtitle_html}
+            {accent_html}
         </div>
         """,
         unsafe_allow_html=True,
@@ -1406,6 +1434,7 @@ def display_sidebar() -> Tuple[Any, Any, List[float], str]:
     """Displays the sidebar widgets for file uploads and LAB input."""
     st.sidebar.header("Input Studio")
     st.sidebar.markdown("Upload your datasets and tune the LAB values.")
+    st.sidebar.markdown("### Uploads")
     csv_file = st.sidebar.file_uploader("ISCC-NBS LAB CSV", type=["csv"])
     rdf_file = st.sidebar.file_uploader("Getty AAT RDF / JSON", type=["xml", "json"])
     st.sidebar.markdown(
@@ -1423,6 +1452,8 @@ def display_sidebar() -> Tuple[Any, Any, List[float], str]:
         """,
         unsafe_allow_html=True,
     )
+    st.sidebar.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
+    st.sidebar.markdown("### Controls")
     delta_e_metric = st.sidebar.radio(
         "Delta-E method",
         ("Euclidean Delta E 76", "CIEDE2000"),
@@ -1530,37 +1561,40 @@ def summarize_dataset(dataset_df: pd.DataFrame) -> Dict[str, Any]:
 
 def render_dataset_overview(dataset_df: pd.DataFrame) -> None:
     summary = summarize_dataset(dataset_df)
-    render_section_header("Dataset Overview", "A quick read on the ISCC-NBS archive.")
+    st.markdown('<div class="section-spacer-lg"></div>', unsafe_allow_html=True)
+    render_section_header("Dataset Overview", "A quick read on the ISCC-NBS archive.", accent=True)
     spark_l = sparkline_sample(dataset_df["L"])
     spark_a = sparkline_sample(dataset_df["A"])
     spark_b = sparkline_sample(dataset_df["B"])
 
-    cols = st.columns(4)
+    cols = st.columns([1.3, 1])
     cols[0].metric("Colors", f"{summary['rows']:,}", border=True)
     cols[1].metric("Unique Names", f"{summary['unique']:,}", border=True)
-    cols[2].metric(
+
+    cols = st.columns(3)
+    cols[0].metric(
         "L Spread",
         f"{summary['l_min']:.1f} - {summary['l_max']:.1f}",
         chart_data=spark_l,
         border=True,
     )
-    cols[3].metric(
+    cols[1].metric(
         "A Spread",
         f"{summary['a_min']:.1f} - {summary['a_max']:.1f}",
         chart_data=spark_a,
         border=True,
     )
-
-    cols = st.columns(4)
-    cols[0].metric(
+    cols[2].metric(
         "B Spread",
         f"{summary['b_min']:.1f} - {summary['b_max']:.1f}",
         chart_data=spark_b,
         border=True,
     )
-    cols[1].metric("Dataset Health", "Validated", border=True)
-    cols[2].metric("Color Space", "CIELAB", border=True)
-    cols[3].metric("Ready", "Yes", border=True)
+
+    cols = st.columns(3)
+    cols[0].metric("Dataset Health", "Validated", border=True)
+    cols[1].metric("Color Space", "CIELAB", border=True)
+    cols[2].metric("Ready", "Yes", border=True)
 
     with st.expander("Preview dataset", expanded=False):
         preview_df = dataset_df.head(12).copy()
@@ -1595,7 +1629,7 @@ def render_input_preview(input_lab: List[float], input_rgb: Tuple[int, int, int]
             """,
             unsafe_allow_html=True,
         )
-    st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-spacer-lg"></div>', unsafe_allow_html=True)
 
 
 def render_results_section(
@@ -1716,6 +1750,7 @@ def main() -> None:
 
     render_input_preview(input_lab, input_rgb, method_label)
 
+    st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
     analyze = st.button("Analyze Color", type="primary", use_container_width=True)
     if analyze:
         if analyzer.set_input_color(input_lab):
