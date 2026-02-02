@@ -1,0 +1,21 @@
+[theme]
+base = "light"
+primaryColor = "#F05D5E"
+backgroundColor = "#FDF6EF"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#1B1B1F"
+font = "Space Grotesk"
+headingFont = "Fraunces"
+
+redColor = "#F05D5E"
+orangeColor = "#F2C14E"
+yellowColor = "#F7D374"
+greenColor = "#1C8F6D"
+blueColor = "#0F6B6C"
+violetColor = "#7A6F8F"
+grayColor = "#8B9098"
+
+[client]
+toolbarMode = "minimal"
+showErrorDetails = false
+showSidebarNavigation = true
