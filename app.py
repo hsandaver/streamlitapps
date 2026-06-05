@@ -8,6 +8,7 @@ Features modular data handling, refined visualizations, and a premium UI.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import html
 import io
 import json
 from typing import Union, List, Tuple, Optional, Any, IO, Dict
@@ -451,6 +452,7 @@ def inject_global_styles() -> None:
         @import url('https://fonts.googleapis.com/css2?family=Fraunces:wght@300;500;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
 
         :root {{
+            color-scheme: light;
             --bg-top: {THEME['bg_top']};
             --bg-bottom: {THEME['bg_bottom']};
             --ink: {THEME['ink']};
@@ -469,6 +471,10 @@ def inject_global_styles() -> None:
         html, body, [class*="st-"] {{
             font-family: '{FONT_BODY}', sans-serif;
             color: var(--ink);
+        }}
+
+        html, body, .stApp, [data-testid="stAppViewContainer"] {{
+            color-scheme: light;
         }}
 
         span[data-testid="stIconMaterial"] {{
@@ -616,6 +622,15 @@ def inject_global_styles() -> None:
             color: var(--muted);
         }}
 
+        .plot-title {{
+            font-family: '{FONT_DISPLAY}', serif;
+            font-size: 1.35rem;
+            font-weight: 700;
+            line-height: 1.2;
+            margin: 1.2rem 0 0.25rem;
+            color: var(--ink);
+        }}
+
         .glass-card {{
             background: var(--card);
             border: 1px solid var(--card-border);
@@ -636,6 +651,11 @@ def inject_global_styles() -> None:
             padding: 1.1rem;
             box-shadow: var(--shadow);
             min-height: 170px;
+        }}
+
+        .color-card > div:last-child {{
+            min-width: 0;
+            overflow-wrap: anywhere;
         }}
 
         .color-swatch {{
@@ -686,6 +706,62 @@ def inject_global_styles() -> None:
             color: var(--muted);
             letter-spacing: 0.06em;
             text-transform: uppercase;
+        }}
+
+        .match-metric-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
+            gap: 0.85rem;
+            align-items: stretch;
+            margin-bottom: 0.85rem;
+        }}
+
+        .match-metric-grid--wide {{
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        }}
+
+        .match-metric-card {{
+            min-width: 0;
+            min-height: 118px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            gap: 0.65rem;
+            background: var(--card);
+            border: 1px solid var(--card-border);
+            border-radius: 18px;
+            padding: 1rem;
+            box-shadow: var(--shadow);
+            overflow-wrap: anywhere;
+        }}
+
+        .match-metric-label {{
+            color: var(--muted);
+            font-size: 0.76rem;
+            font-weight: 700;
+            line-height: 1.2;
+        }}
+
+        .match-metric-value {{
+            color: var(--ink);
+            font-size: 1.85rem;
+            font-weight: 500;
+            line-height: 1.08;
+            white-space: normal;
+        }}
+
+        .match-metric-value--name {{
+            font-size: 1.65rem;
+        }}
+
+        .match-metric-card--secondary .match-metric-value {{
+            font-size: 1.7rem;
+        }}
+
+        .match-metric-detail {{
+            color: var(--muted);
+            font-size: 0.82rem;
+            line-height: 1.35;
         }}
 
         .section-spacer {{
@@ -870,6 +946,23 @@ def inject_global_styles() -> None:
             to {{
                 opacity: 1;
                 transform: translateY(0);
+            }}
+        }}
+
+        @media (max-width: 760px) {{
+            .match-metric-grid,
+            .match-metric-grid--wide {{
+                grid-template-columns: 1fr;
+            }}
+
+            .match-metric-card {{
+                min-height: 106px;
+            }}
+
+            .match-metric-value,
+            .match-metric-card--secondary .match-metric-value,
+            .match-metric-value--name {{
+                font-size: 1.45rem;
             }}
         }}
         </style>
@@ -2213,6 +2306,94 @@ def create_lab_comparison_bar(
     return apply_plot_theme(fig)
 
 
+def calculate_focus_axis_range(
+    values: Union[pd.Series, np.ndarray, List[float]],
+    allowed_range: Tuple[float, float],
+    minimum_span: float,
+    padding_ratio: float = 0.14,
+) -> List[float]:
+    """Builds a padded axis range that keeps the active LAB cloud readable."""
+    arr = pd.Series(values).dropna().astype(float).to_numpy()
+    if arr.size == 0:
+        return [allowed_range[0], allowed_range[1]]
+
+    low = float(np.min(arr))
+    high = float(np.max(arr))
+    span = max(high - low, minimum_span)
+    midpoint = (low + high) / 2.0
+    padded_span = span * (1.0 + padding_ratio * 2.0)
+    range_low = midpoint - padded_span / 2.0
+    range_high = midpoint + padded_span / 2.0
+
+    if range_low < allowed_range[0]:
+        range_high += allowed_range[0] - range_low
+        range_low = allowed_range[0]
+    if range_high > allowed_range[1]:
+        range_low -= range_high - allowed_range[1]
+        range_high = allowed_range[1]
+    range_low = max(allowed_range[0], range_low)
+    range_high = min(allowed_range[1], range_high)
+    return [range_low, range_high]
+
+
+def calculate_lab_scene_ranges(
+    dataset_df: pd.DataFrame,
+    input_lab: List[float],
+    closest_lab: List[float],
+) -> Dict[str, List[float]]:
+    """Calculates focused 3D ranges from dataset, input, and closest match coordinates."""
+    combined_l = pd.concat([dataset_df["L"], pd.Series([input_lab[0], closest_lab[0]])], ignore_index=True)
+    combined_a = pd.concat([dataset_df["A"], pd.Series([input_lab[1], closest_lab[1]])], ignore_index=True)
+    combined_b = pd.concat([dataset_df["B"], pd.Series([input_lab[2], closest_lab[2]])], ignore_index=True)
+    return {
+        "L": calculate_focus_axis_range(combined_l, LAB_L_RANGE, minimum_span=18.0),
+        "A": calculate_focus_axis_range(combined_a, LAB_A_RANGE, minimum_span=34.0),
+        "B": calculate_focus_axis_range(combined_b, LAB_B_RANGE, minimum_span=34.0),
+    }
+
+
+def calculate_scene_aspect_ratio(scene_ranges: Dict[str, List[float]]) -> Dict[str, float]:
+    """Keeps the 3D box proportional without letting a narrow axis disappear."""
+    spans = {
+        axis: max(float(axis_range[1] - axis_range[0]), 1.0)
+        for axis, axis_range in scene_ranges.items()
+    }
+    max_span = max(spans.values())
+    return {
+        "x": max(spans["L"] / max_span, 0.45),
+        "y": max(spans["A"] / max_span, 0.45),
+        "z": max(spans["B"] / max_span, 0.45),
+    }
+
+
+def build_dataset_marker_colors(
+    dataset_df: pd.DataFrame,
+    science_settings: ColorScienceSettings,
+) -> Tuple[List[str], List[str]]:
+    """Converts dataset LAB values into visible sRGB marker colors and hex labels."""
+    marker_colors: List[str] = []
+    hex_labels: List[str] = []
+    for row in dataset_df[["L", "A", "B"]].itertuples(index=False):
+        rgb = cached_lab_to_rgb(
+            float(row.L),
+            float(row.A),
+            float(row.B),
+            source_illuminant=science_settings.source_illuminant,
+            target_illuminant=science_settings.target_illuminant,
+            observer=science_settings.observer,
+            chromatic_adaptation=science_settings.chromatic_adaptation,
+        )
+        marker_colors.append(format_rgb(rgb))
+        hex_labels.append(rgb_to_hex(rgb))
+    return marker_colors, hex_labels
+
+
+def marker_outline_for_rgb(rgb: Tuple[int, int, int]) -> str:
+    """Selects a contrasting outline for highlighted color markers."""
+    luminance = (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255.0
+    return "rgba(24,24,28,0.92)" if luminance > 0.62 else "rgba(255,255,255,0.96)"
+
+
 def create_3d_lab_plot(
     input_lab: List[float],
     closest_lab: List[float],
@@ -2220,57 +2401,168 @@ def create_3d_lab_plot(
     dataset_df: pd.DataFrame,
     input_rgb: Tuple[int, int, int],
     closest_rgb: Tuple[int, int, int],
+    science_settings: Optional[ColorScienceSettings] = None,
+    delta_e: Optional[float] = None,
 ) -> go.Figure:
     """Generates a 3D scatter plot of the LAB color space."""
+    settings = (science_settings or ColorScienceSettings()).normalized()
+    dataset_marker_colors, dataset_hex_labels = build_dataset_marker_colors(dataset_df, settings)
+    scene_ranges = calculate_lab_scene_ranges(dataset_df, input_lab, closest_lab)
+    aspect_ratio = calculate_scene_aspect_ratio(scene_ranges)
+    marker_size = 5 if len(dataset_df) <= 600 else 4 if len(dataset_df) <= 2000 else 3
+
     dataset_points = go.Scatter3d(
         x=dataset_df["L"],
         y=dataset_df["A"],
         z=dataset_df["B"],
         mode="markers",
-        marker=dict(size=3, color="rgba(120,120,130,0.35)", opacity=0.5),
+        marker=dict(
+            size=marker_size,
+            color=dataset_marker_colors,
+            opacity=0.86,
+            line=dict(width=1, color="rgba(24,24,28,0.28)"),
+        ),
         name="Dataset Colors",
-        hoverinfo="text",
-        text=dataset_df["Color Name"],
+        customdata=np.column_stack([dataset_df["Color Name"].astype(str), dataset_hex_labels]),
+        hovertemplate=(
+            "<b>%{customdata[0]}</b><br>"
+            "L*: %{x:.2f}<br>"
+            "a*: %{y:.2f}<br>"
+            "b*: %{z:.2f}<br>"
+            "sRGB: %{customdata[1]}"
+            "<extra>Dataset color</extra>"
+        ),
+    )
+    match_line_label = f"Delta-E {delta_e:.2f}" if delta_e is not None else "Input to closest match"
+    match_line = go.Scatter3d(
+        x=[input_lab[0], closest_lab[0]],
+        y=[input_lab[1], closest_lab[1]],
+        z=[input_lab[2], closest_lab[2]],
+        mode="lines",
+        line=dict(color="rgba(24,24,28,0.72)", width=5),
+        name=match_line_label,
+        hovertemplate=(
+            f"{html.escape(match_line_label)}<br>"
+            f"Closest: {html.escape(str(closest_color_name))}"
+            "<extra></extra>"
+        ),
     )
     input_point = go.Scatter3d(
         x=[input_lab[0]],
         y=[input_lab[1]],
         z=[input_lab[2]],
         mode="markers+text",
-        marker=dict(size=10, color=format_rgb(input_rgb), opacity=1),
+        marker=dict(
+            size=12,
+            color=format_rgb(input_rgb),
+            opacity=1,
+            symbol="diamond",
+            line=dict(width=3, color=marker_outline_for_rgb(input_rgb)),
+        ),
         text=["Input Color"],
         textposition="top center",
         name="Input Color",
-        hoverinfo="text",
+        hovertemplate=(
+            "<b>Input Color</b><br>"
+            "L*: %{x:.2f}<br>"
+            "a*: %{y:.2f}<br>"
+            "b*: %{z:.2f}<br>"
+            f"sRGB: {rgb_to_hex(input_rgb)}"
+            "<extra></extra>"
+        ),
     )
     closest_point = go.Scatter3d(
         x=[closest_lab[0]],
         y=[closest_lab[1]],
         z=[closest_lab[2]],
         mode="markers+text",
-        marker=dict(size=10, color=format_rgb(closest_rgb), opacity=1),
+        marker=dict(
+            size=12,
+            color=format_rgb(closest_rgb),
+            opacity=1,
+            symbol="circle",
+            line=dict(width=3, color=marker_outline_for_rgb(closest_rgb)),
+        ),
         text=[f"Closest: {closest_color_name}"],
         textposition="top center",
         name="Closest Color",
-        hoverinfo="text",
-    )
-    fig = go.Figure(data=[dataset_points, input_point, closest_point])
-    fig.update_layout(
-        title="3D LAB Color Space",
-        scene=dict(
-            xaxis_title="L",
-            yaxis_title="A",
-            zaxis_title="B",
-            xaxis=dict(range=[0, 100], backgroundcolor="rgba(255,255,255,0.7)", gridcolor=THEME["grid"]),
-            yaxis=dict(range=[-128, 127], backgroundcolor="rgba(255,255,255,0.7)", gridcolor=THEME["grid"]),
-            zaxis=dict(range=[-128, 127], backgroundcolor="rgba(255,255,255,0.7)", gridcolor=THEME["grid"]),
-            bgcolor="rgba(0,0,0,0)",
-            camera=dict(eye=dict(x=1.5, y=1.5, z=1.5)),
+        hovertemplate=(
+            f"<b>{html.escape(str(closest_color_name))}</b><br>"
+            "L*: %{x:.2f}<br>"
+            "a*: %{y:.2f}<br>"
+            "b*: %{z:.2f}<br>"
+            f"sRGB: {rgb_to_hex(closest_rgb)}"
+            "<extra>Closest color</extra>"
         ),
-        legend=dict(x=0.7, y=0.9),
-        margin=dict(l=0, r=0, t=70, b=0),
     )
-    return apply_plot_theme(fig, for_3d=True)
+    fig = go.Figure(data=[dataset_points, match_line, input_point, closest_point])
+    fig.update_layout(
+        title="",
+        height=680,
+        dragmode="orbit",
+        uirevision="lab-3d-color-space",
+        scene=dict(
+            xaxis_title="L* lightness",
+            yaxis_title="a* green to red",
+            zaxis_title="b* blue to yellow",
+            xaxis=dict(
+                range=scene_ranges["L"],
+                backgroundcolor="rgba(255,255,255,0.82)",
+                gridcolor="rgba(24,24,28,0.16)",
+                zerolinecolor="rgba(24,24,28,0.35)",
+                showspikes=False,
+                nticks=6,
+            ),
+            yaxis=dict(
+                range=scene_ranges["A"],
+                backgroundcolor="rgba(255,255,255,0.82)",
+                gridcolor="rgba(24,24,28,0.16)",
+                zerolinecolor="rgba(24,24,28,0.35)",
+                showspikes=False,
+                nticks=6,
+            ),
+            zaxis=dict(
+                range=scene_ranges["B"],
+                backgroundcolor="rgba(255,255,255,0.82)",
+                gridcolor="rgba(24,24,28,0.16)",
+                zerolinecolor="rgba(24,24,28,0.35)",
+                showspikes=False,
+                nticks=6,
+            ),
+            bgcolor="rgba(0,0,0,0)",
+            aspectmode="manual",
+            aspectratio=aspect_ratio,
+            camera=dict(eye=dict(x=1.55, y=1.85, z=1.25)),
+        ),
+        legend=dict(
+            orientation="h",
+            x=0,
+            y=1.03,
+            xanchor="left",
+            yanchor="bottom",
+            bgcolor="rgba(255,255,255,0.84)",
+            bordercolor=THEME["card_border"],
+            borderwidth=1,
+        ),
+        hoverlabel=dict(bgcolor="rgba(255,255,255,0.94)", bordercolor=THEME["card_border"], font_size=13),
+        margin=dict(l=0, r=0, t=95, b=0),
+    )
+    fig = apply_plot_theme(fig, for_3d=True)
+    fig.update_layout(
+        title=dict(text=""),
+        legend=dict(
+            orientation="h",
+            x=0,
+            y=1.03,
+            xanchor="left",
+            yanchor="bottom",
+            bgcolor="rgba(255,255,255,0.84)",
+            bordercolor=THEME["card_border"],
+            borderwidth=1,
+        ),
+        margin=dict(l=0, r=0, t=82, b=0),
+    )
+    return fig
 
 
 def create_delta_e_histogram(delta_e_values: np.ndarray) -> go.Figure:
@@ -2459,14 +2751,46 @@ def render_status_pill(text: str) -> None:
     )
 
 
+def escape_markup(value: Any) -> str:
+    return html.escape(str(value), quote=True)
+
+
+def render_match_metric_cards(
+    metrics: List[Dict[str, Any]],
+    *,
+    wide: bool = False,
+    secondary: bool = False,
+) -> None:
+    grid_class = "match-metric-grid match-metric-grid--wide" if wide else "match-metric-grid"
+    card_modifier = " match-metric-card--secondary" if secondary else ""
+    cards_html: List[str] = []
+    for metric in metrics:
+        value_modifier = " match-metric-value--name" if metric.get("value_style") == "name" else ""
+        detail = metric.get("detail")
+        detail_html = f'<div class="match-metric-detail">{escape_markup(detail)}</div>' if detail else ""
+        cards_html.append(
+            (
+                f'<div class="match-metric-card{card_modifier}">'
+                f'<div class="match-metric-label">{escape_markup(metric["label"])}</div>'
+                "<div>"
+                f'<div class="match-metric-value{value_modifier}">{escape_markup(metric["value"])}</div>'
+                f"{detail_html}"
+                "</div>"
+                "</div>"
+            )
+        )
+
+    st.html(f'<div class="{grid_class}">{"".join(cards_html)}</div>')
+
+
 def render_color_card(title: str, subtitle: str, rgb: Tuple[int, int, int], lab: List[float]) -> None:
     st.markdown(
         f"""
         <div class="color-card">
             <div class="color-swatch" style="background: {format_rgb(rgb)}"></div>
             <div>
-                <div class="color-card-title">{title}</div>
-                <div class="color-card-subtitle">{subtitle}</div>
+                <div class="color-card-title">{escape_markup(title)}</div>
+                <div class="color-card-subtitle">{escape_markup(subtitle)}</div>
                 <div class="color-card-hex">{rgb_to_hex(rgb)}</div>
                 <div class="color-card-lab">L {lab[0]:.2f} | A {lab[1]:.2f} | B {lab[2]:.2f}</div>
             </div>
@@ -2717,6 +3041,8 @@ class ColorAnalyzer:
                 self.dataset_df,
                 result.input_rgb,
                 result.closest_rgb,
+                result.science_settings,
+                result.delta_e,
             ),
             "delta_hist": create_delta_e_histogram(
                 calculate_delta_e(
@@ -3165,6 +3491,35 @@ def build_top_matches(
     return ranked.head(top_n)[["Color Name", "Delta E"]]
 
 
+def create_top_matches_bar(top_matches: pd.DataFrame) -> go.Figure:
+    """Creates a horizontal Plotly bar chart for nearest color matches."""
+    chart_df = top_matches.copy().sort_values("Delta E", ascending=False)
+    fig = px.bar(
+        chart_df,
+        x="Delta E",
+        y="Color Name",
+        orientation="h",
+        text=chart_df["Delta E"].map(lambda value: f"{value:.2f}"),
+        title="Top 10 Nearest Colors",
+        template="plotly_white",
+        color_discrete_sequence=[THEME["accent"]],
+    )
+    fig.update_traces(
+        hovertemplate="<b>%{y}</b><br>Delta-E: %{x:.2f}<extra></extra>",
+        textposition="outside",
+        cliponaxis=False,
+    )
+    fig = apply_plot_theme(fig)
+    fig.update_layout(
+        xaxis_title="Delta-E",
+        yaxis_title="Color Name",
+        showlegend=False,
+        height=340,
+        margin=dict(l=130, r=60, t=70, b=40),
+    )
+    return fig
+
+
 def summarize_dataset(dataset_df: pd.DataFrame) -> Dict[str, Any]:
     return {
         "rows": len(dataset_df),
@@ -3289,23 +3644,54 @@ def render_results_section(
     dataset_df: pd.DataFrame,
 ) -> None:
     render_section_header("Match Studio", "Your closest ISCC-NBS match and key metrics.")
-    cols = st.columns(5)
-    cols[0].metric("Closest Match", result.closest_name)
-    cols[1].metric("Delta-E", result.delta_e_label)
-    cols[2].metric("Method", result.method_label)
-    cols[3].metric("Observer / WP", f"{result.science_settings.observer_label}, {result.science_settings.source_label}")
-    cols[4].metric("Confidence", result.confidence.score_label)
+    render_match_metric_cards(
+        [
+            {
+                "label": "Closest Match",
+                "value": result.closest_name,
+                "detail": "ISCC-NBS term",
+                "value_style": "name",
+            },
+            {"label": "Delta-E", "value": result.delta_e_label, "detail": "Lower is closer"},
+            {
+                "label": "Method",
+                "value": result.method_label,
+                "detail": DELTA_E_PRESET_LABELS[normalize_delta_e_preset(result.delta_e_preset)],
+            },
+            {
+                "label": "Observer / WP",
+                "value": f"{result.science_settings.observer_label}, {result.science_settings.source_label}",
+                "detail": f"RGB {result.science_settings.target_label}; {result.science_settings.adaptation_label}",
+            },
+            {
+                "label": "Confidence",
+                "value": f"{result.confidence.confidence_score:.0f}/100",
+                "detail": result.confidence.confidence_label,
+            },
+        ]
+    )
 
-    confidence_cols = st.columns(3)
-    confidence_cols[0].metric(
-        "Top-2 Margin",
-        f"{result.confidence.margin_top2:.2f}" if result.confidence.margin_top2 is not None else "N/A",
+    render_match_metric_cards(
+        [
+            {
+                "label": "Top-2 Margin",
+                "value": f"{result.confidence.margin_top2:.2f}" if result.confidence.margin_top2 is not None else "N/A",
+                "detail": "Distance to second candidate",
+            },
+            {
+                "label": "Top-3 Margin",
+                "value": f"{result.confidence.margin_top3:.2f}" if result.confidence.margin_top3 is not None else "N/A",
+                "detail": "Distance to third candidate",
+            },
+            {
+                "label": "Ambiguity",
+                "value": "Yes" if result.confidence.is_ambiguous else "No",
+                "detail": "Needs review" if result.confidence.is_ambiguous else "Clear separation",
+            },
+        ],
+        wide=True,
+        secondary=True,
     )
-    confidence_cols[1].metric(
-        "Top-3 Margin",
-        f"{result.confidence.margin_top3:.2f}" if result.confidence.margin_top3 is not None else "N/A",
-    )
-    confidence_cols[2].metric("Ambiguity", "Yes" if result.confidence.is_ambiguous else "No")
 
     if result.confidence.is_ambiguous:
         competing = ", ".join(result.confidence.competing_names[:3])
@@ -3323,11 +3709,32 @@ def render_results_section(
         st.warning("sRGB gamut warning:\n- " + "\n- ".join(gamut_warnings))
 
     if result.uncertainty.enabled:
-        stability_cols = st.columns(4)
-        stability_cols[0].metric("Monte Carlo Draws", f"{result.uncertainty.simulations_run}")
-        stability_cols[1].metric("Repeat Rate", result.uncertainty.repeat_rate_label)
-        stability_cols[2].metric("Stability", result.uncertainty.stability_score_label)
-        stability_cols[3].metric("MC Delta-E Mean +/- SD", result.uncertainty.delta_band_label)
+        render_match_metric_cards(
+            [
+                {
+                    "label": "Monte Carlo Draws",
+                    "value": f"{result.uncertainty.simulations_run}",
+                    "detail": "Simulation count",
+                },
+                {
+                    "label": "Repeat Rate",
+                    "value": result.uncertainty.repeat_rate_label,
+                    "detail": "Best-match frequency",
+                },
+                {
+                    "label": "Stability",
+                    "value": f"{result.uncertainty.stability_score:.0f}/100",
+                    "detail": result.uncertainty.stability_label,
+                },
+                {
+                    "label": "MC Delta-E Mean +/- SD",
+                    "value": result.uncertainty.delta_band_label,
+                    "detail": "Best-match spread",
+                },
+            ],
+            wide=True,
+            secondary=True,
+        )
         st.caption(
             f"MC best-match Delta-E p05-p95: {result.uncertainty.percentile_band_label}. "
             f"Input sigma: {result.uncertainty_settings.sigma_label}."
@@ -3360,15 +3767,7 @@ def render_results_section(
         top_n=10,
     )
     with st.expander("Top 10 nearest colors (sorted by Delta-E)", expanded=False):
-        st.bar_chart(
-            top_matches,
-            x="Color Name",
-            y="Delta E",
-            color=THEME["accent"],
-            horizontal=True,
-            sort="Delta E",
-            height=320,
-        )
+        st.plotly_chart(create_top_matches_bar(top_matches), use_container_width=True)
 
     results_df = build_results_dataframe(result)
     with st.expander("Detailed results", expanded=False):
@@ -3411,7 +3810,12 @@ def render_visuals_section(figs: Dict[str, go.Figure]) -> None:
     with tabs[1]:
         st.plotly_chart(figs["lab_bar"], use_container_width=True)
     with tabs[2]:
-        st.plotly_chart(figs["lab_3d"], use_container_width=True)
+        st.markdown('<div class="plot-title">3D LAB Color Space</div>', unsafe_allow_html=True)
+        st.plotly_chart(
+            figs["lab_3d"],
+            use_container_width=True,
+            config={"displaylogo": False, "scrollZoom": True, "responsive": True},
+        )
     with tabs[3]:
         st.plotly_chart(figs["delta_hist"], use_container_width=True)
     with tabs[4]:
