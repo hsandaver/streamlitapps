@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import html
 import io
 import json
+import os
 from typing import Union, List, Tuple, Optional, Any, IO, Dict
 import logging
 import re
@@ -55,13 +56,80 @@ class ConversionError(Exception):
 # Setup and Configuration
 # =============================================================================
 
-logging.basicConfig(
-    filename="color_analyzer.log",
-    filemode="a",
-    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-    level=logging.DEBUG,
+LOG_FILE = "color_analyzer.log"
+LOG_FORMAT = "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+# Set to 1/true/yes/on/debug to include app DEBUG logs and colormath conversion traces.
+VERBOSE_LOG_ENV_VAR = "COLOR_ANALYZER_VERBOSE_LOGS"
+VERBOSE_LOG_VALUES = {"1", "true", "yes", "on", "debug"}
+COLOR_MATH_LOGGERS = (
+    "colormath",
+    "colormath.color_conversions",
+    "colormath.chromatic_adaptation",
 )
-logger = logging.getLogger(__name__)
+
+
+def _is_verbose_logging_enabled() -> bool:
+    return os.getenv(VERBOSE_LOG_ENV_VAR, "").strip().lower() in VERBOSE_LOG_VALUES
+
+
+def _remove_root_color_analyzer_handlers(log_path: str) -> None:
+    root_logger = logging.getLogger()
+    for handler in list(root_logger.handlers):
+        if isinstance(handler, logging.FileHandler) and handler.baseFilename == log_path:
+            root_logger.removeHandler(handler)
+            handler.close()
+
+
+def _configure_file_handler(target_logger: logging.Logger, level: int, log_path: str) -> None:
+    formatter = logging.Formatter(LOG_FORMAT)
+    for handler in target_logger.handlers:
+        if getattr(handler, "_color_analyzer_file_handler", False) and handler.baseFilename == log_path:
+            handler.setLevel(level)
+            handler.setFormatter(formatter)
+            return
+
+    handler = logging.FileHandler(LOG_FILE, mode="a")
+    handler._color_analyzer_file_handler = True
+    handler.setLevel(level)
+    handler.setFormatter(formatter)
+    target_logger.addHandler(handler)
+
+
+def _remove_color_analyzer_handlers(target_logger: logging.Logger) -> None:
+    for handler in list(target_logger.handlers):
+        if getattr(handler, "_color_analyzer_file_handler", False):
+            target_logger.removeHandler(handler)
+            handler.close()
+
+
+def _configure_logging() -> logging.Logger:
+    verbose_logging = _is_verbose_logging_enabled()
+    app_log_level = logging.DEBUG if verbose_logging else logging.INFO
+    log_path = os.path.abspath(LOG_FILE)
+
+    _remove_root_color_analyzer_handlers(log_path)
+
+    app_logger = logging.getLogger("color_analyzer")
+    app_logger.setLevel(app_log_level)
+    app_logger.propagate = False
+    _configure_file_handler(app_logger, app_log_level, log_path)
+
+    colormath_level = logging.DEBUG if verbose_logging else logging.WARNING
+    for logger_name in COLOR_MATH_LOGGERS:
+        logging.getLogger(logger_name).setLevel(colormath_level)
+
+    colormath_logger = logging.getLogger("colormath")
+    _remove_color_analyzer_handlers(colormath_logger)
+    if verbose_logging:
+        colormath_logger.propagate = False
+        _configure_file_handler(colormath_logger, logging.DEBUG, log_path)
+    else:
+        colormath_logger.propagate = True
+
+    return app_logger
+
+
+logger = _configure_logging()
 
 # Compatibility for older NumPy versions
 if not hasattr(np, "asscalar"):
